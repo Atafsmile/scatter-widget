@@ -1,17 +1,27 @@
 import { useState, useEffect } from 'react';
-import { WidgetTemplate } from './components/WidgetTemplate/WidgetTemplate';
-import { WidgetTemplateConfiguration } from './components/WidgetTemplateConfiguration/WidgetTemplateConfiguration';
-import { WidgetTemplateEnvelope, DataEntry, WidgetEvent } from './iosense-sdk/types';
+import { Scatter } from './components/Scatter/Scatter';
+import { ScatterConfiguration } from './components/ScatterConfiguration/ScatterConfiguration';
+import { ScatterEnvelope, DataEntry, WidgetEvent } from './iosense-sdk/types';
 import { validateSSOToken } from './iosense-sdk/api';
 import { resolve } from './iosense-sdk/mini-engine';
+import { WidgetEmptyState } from './iosense-sdk/WidgetEmptyState';
+import { GLOBAL_TIMEPICKER_FALLBACK } from './iosense-sdk/global-timepickers';
+import { Button } from '@faclon-labs/design-sdk/Button';
 import '@faclon-labs/design-sdk/styles.css';
 import './App.css';
 
+// The dev harness stands in for the host — in production the dashboard injects the
+// real list. Same list is handed to the configurator (so Global mode is selectable)
+// and to the mini-engine (so it can resolve a linked Global window).
+const globalTimepickers = GLOBAL_TIMEPICKER_FALLBACK;
+
 export default function App() {
-  const [envelope, setEnvelope] = useState<WidgetTemplateEnvelope | undefined>(undefined);
+  const [envelope, setEnvelope] = useState<ScatterEnvelope | undefined>(undefined);
   const [data, setData] = useState<DataEntry[]>([]);
+  const [fetchError, setFetchError] = useState(false);
   const [auth, setAuth] = useState<string>(localStorage.getItem('bearer_token') ?? '');
   const [timeOverride, setTimeOverride] = useState<{ startTime: number; endTime: number } | undefined>(undefined);
+  const [retryTick, setRetryTick] = useState(0);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -34,11 +44,12 @@ export default function App() {
   useEffect(() => {
     if (!envelope || !auth) return;
     console.log('[App] resolving envelope:', envelope.dynamicBindingPathList, 'override:', timeOverride);
-    resolve(envelope, { authentication: auth, override: timeOverride }).then(({ data: resolved }) => {
-      console.log('[App] resolved data:', resolved);
+    resolve(envelope, { authentication: auth, override: timeOverride, globalTimepickers }).then(({ data: resolved, error }) => {
+      console.log('[App] resolved data:', resolved, 'error:', error);
       setData(resolved);
+      setFetchError(error);
     });
-  }, [envelope, auth, timeOverride]);
+  }, [envelope, auth, timeOverride, retryTick]);
 
   function handleEvent(event: WidgetEvent) {
     console.log('[Widget Event]', event);
@@ -53,15 +64,27 @@ export default function App() {
   return (
     <div className="app">
       <div className="app__config">
-        <WidgetTemplateConfiguration config={envelope} authentication={auth} onChange={setEnvelope} />
+        <ScatterConfiguration
+          config={envelope}
+          authentication={auth}
+          onChange={setEnvelope}
+          globalTimepickers={globalTimepickers}
+        />
       </div>
       <div className="app__widget">
-        {envelope ? (
-          <WidgetTemplate config={envelope.uiConfig} data={data} onEvent={handleEvent} />
+        {!envelope ? (
+          <WidgetEmptyState state="widget-not-configured" />
+        ) : fetchError ? (
+          <WidgetEmptyState
+            state="something-went-wrong"
+            primaryAction={
+              <Button variant="Primary" onClick={() => setRetryTick((t) => t + 1)}>
+                Retry
+              </Button>
+            }
+          />
         ) : (
-          <div className="app__empty">
-            <p className="BodyMediumRegular">Configure the widget in the left panel to preview it here.</p>
-          </div>
+          <Scatter config={envelope.uiConfig} data={data} onEvent={handleEvent} />
         )}
       </div>
     </div>

@@ -70,25 +70,190 @@ export type WidgetEvent =
   | { type: 'FILTER_CHANGE'; payload: Record<string, unknown> };
 
 // ---------------------------------------------------------------------------
-// WidgetTemplate — replace with your widget's config shape after init-widget.sh
+// Time Tab config — mirrors the design-sdk TimeTabConfiguration's emitted shape.
+// STATIC envelope config — NEVER bindable, never added to dynamicBindingPathList.
 // ---------------------------------------------------------------------------
 
-export interface WidgetTemplateUIConfig {
-  // Add your widget's render config fields here.
-  // Example:
-  //   title: string;
-  //   variable: string;       // bindable — user types {{topic}}
-  //   style: { card: { wrapInCard: boolean; bg: string } };
-  style: {
-    card: { wrapInCard: boolean; bg: string };
-  };
+// These mirror the SDK's own TimeTabConfiguration types
+// (node_modules/@faclon-labs/design-sdk — components/product/TimeTabConfiguration/types.d.ts)
+// as closely as TS allows, plus the startTime/endTime pin fields WE add at adopt-time
+// (the SDK's own TimeTabUIConfig carries no absolute timestamps at all).
+
+export type GTPPeriod = 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year';
+export type GTPTimeType = 'fixed' | 'local' | 'global';
+export type GTPNavigation = 'Previous' | 'Current' | 'Next';
+export type GTPEvent = 'Start' | 'Now' | 'End';
+export type GTPDeviationPattern = 'green-up-positive' | 'red-up-positive';
+
+export interface GTPPreset {
+  id: string;
+  label: string;
+  x?: number;
+  xPeriod?: GTPPeriod;
+  calendarType?: 'today' | 'yesterday' | 'current_week' | 'previous_week' | 'current_month' | 'previous_month';
+  isBuiltIn?: boolean;
+  navigation?: GTPNavigation;
+  xEvent?: GTPEvent;
+  y?: number;
+  yPeriod?: GTPPeriod;
+  yEvent?: GTPEvent;
+  periodicities?: string[];
+  hidden?: boolean;
 }
 
-export interface WidgetTemplateEnvelope {
+export interface GTPShift {
+  id: string;
+  name: string;
+  startTime: string;
+  endTime: string;
+  color: string;
+}
+
+// First field on the Cycle Time form — Calendar Year, Financial Year, Custom.
+export type GTPCycleTimeType = 'calendar' | 'financial' | 'custom';
+
+// Cycle-time (shift) anchoring — redefines where each period BEGINS, e.g. a
+// "day" that starts at 06:00 instead of 00:00, a "week" that starts on Wednesday.
+export interface GTPCycleTimeConfig {
+  cycleTimeType: GTPCycleTimeType;
+  identifier: 'start' | 'end';
+  hour: string;
+  minute: string;
+  dayOfWeek: number | null;
+  date: string;
+  month: string;
+  year: string;
+}
+
+// A "Global Time Picker" registered in the host environment — when linked, its full
+// configuration is READ-ONLY here; only per-widget display settings remain editable.
+export interface GTPGlobalTimepicker {
+  id: string;
+  name: string;
+  timezone?: string;
+  cycleTime?: GTPCycleTimeConfig;
+  allDurations?: GTPPreset[];
+  defaultDurationId?: string;
+  shifts?: GTPShift[];
+  shiftAggregator?: string;
+  comparisonMode?: boolean;
+  futureDaysAllowed?: string;
+}
+
+// Per-widget settings when the picker is set to Global — the rest is inherited from
+// the selected GTPGlobalTimepicker, looked up via `globalTimepickers`, never stored here.
+export interface GTPGlobalSettings {
+  globalTimepickerId: string;
+  comparisonMode: boolean;
+  deviationPattern: GTPDeviationPattern;
+  allowPerSourceIndicator: boolean;
+  sourceDeviationOverrides: Record<string, GTPDeviationPattern>;
+  futureDaysAllowed: string;
+}
+
+// Inline "Set Duration" form values used by the Fixed Time Picker — ONE duration
+// configured directly (unlike Local's managed list of presets).
+export interface GTPFixedDuration {
+  name: string;
+  navigation: GTPNavigation;
+  x: string;
+  xPeriod: GTPPeriod;
+  xEvent: GTPEvent;
+  y: string;
+  yPeriod: GTPPeriod;
+  yEvent: GTPEvent;
+  periodicity: string;
+}
+
+export interface GTPFixedSettings {
+  timezone: string;
+  cycleTime: GTPCycleTimeConfig;
+  duration: GTPFixedDuration;
+  disablePeriodicities: boolean;
+  shifts: GTPShift[];
+  shiftAggregator: string;
+  comparisonMode: boolean;
+  deviationPattern: GTPDeviationPattern;
+  allowPerSourceIndicator: boolean;
+  sourceDeviationOverrides: Record<string, GTPDeviationPattern>;
+  futureDaysAllowed: string;
+}
+
+export interface TimeTabUIConfig {
+  linkTimeWith?: GTPTimeType;
+  timezone: string;
+  /** @deprecated superseded by linkTimeWith — kept for back-compat with older saves. */
+  timeType?: GTPTimeType;
+  defaultDurationId: string;
+  allDurations: GTPPreset[];
+  defaultPeriodicity: 'minute' | 'hourly' | 'daily' | 'weekly' | 'monthly';
+  disablePeriodicities?: boolean;
+  comparisonMode?: boolean;
+  deviationPattern?: GTPDeviationPattern;
+  allowPerSourceIndicator?: boolean;
+  sourceDeviationOverrides?: Record<string, GTPDeviationPattern>;
+  futureDaysAllowed?: string;
+  shifts?: GTPShift[];
+  shiftAggregator?: string;
+  cycleTime?: GTPCycleTimeConfig;
+  fixed?: GTPFixedSettings;
+  global?: GTPGlobalSettings;
+  // WIDGET/ENGINE-OWNED — the SDK's own TimeTabUIConfig has no absolute timestamps.
+  // Pinned by adoptSdkTimeConfig() at save time for fixed mode so the host fetch isn't
+  // zero-width; null for local/global, which derive their window live.
+  startTime?: number | null;
+  endTime?: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Style config — STATIC, never bindable, never in dynamicBindingPathList.
+// Shared shape across widgets — do not redefine per-widget; add only the
+// widget-specific advanced blocks (title / axis / pointLabel / etc.).
+// ---------------------------------------------------------------------------
+
+export type StylingFontWeight = 'Regular' | 'Medium' | 'Semi-Bold' | 'Bold';
+
+export interface ScatterStyling {
+  card: {
+    wrapInCard: boolean;
+    backgroundColor: string;
+    borderColor: string;
+    borderWidth: number;
+    borderRadius: number;
+  };
+  hideElements: { settingsIcon: boolean; exportIcon: boolean; title: boolean };
+  advancedEnabled: boolean;
+
+  // ── WIDGET-SPECIFIC ADVANCED BLOCKS ────────────────────────────────────
+  title: { fontSize: number; fontColor: string; fontWeight: StylingFontWeight };
+  pointLabel: { fontSize: number; fontColor: string; fontWeight: StylingFontWeight };
+  xAxis: { textColor: string; dataPointColor: string; lineColor: string };
+  yAxis: { textColor: string; dataPointColor: string };
+  // No dataTable block — Scatter has no embedded table.
+  // ────────────────────────────────────────────────────────────────────
+
+  misc: { gridLineColor: string; legendTextColor: string };
+}
+
+// ---------------------------------------------------------------------------
+// Scatter widget config + envelope
+// ---------------------------------------------------------------------------
+
+export interface ScatterUIConfig {
+  // Bindable — user types {{topic}}, resolved as series data (paired by timestamp).
+  xField?: string;
+  yField?: string;
+  // Mirror of envelope.timeConfig — the widget only ever receives `config` (=uiConfig),
+  // never the envelope root, so the Time tab's config must be duplicated here.
+  timeConfig?: TimeTabUIConfig;
+  style: ScatterStyling;
+}
+
+export interface ScatterEnvelope {
   _id: string;
-  type: 'WidgetTemplate';
+  type: 'Scatter';
   general: { title: string };
-  timeConfig?: TimeConfig;
-  uiConfig: WidgetTemplateUIConfig;
+  timeConfig?: TimeTabUIConfig;
+  uiConfig: ScatterUIConfig;
   dynamicBindingPathList: Array<BindingEntry>;
 }

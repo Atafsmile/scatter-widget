@@ -1,19 +1,28 @@
-import { WidgetTemplateEnvelope, WidgetTemplateUIConfig, DataEntry, SeriesPayload, Duration } from './types';
+import { ScatterEnvelope, ScatterUIConfig, DataEntry, SeriesPayload, GTPGlobalTimepicker } from './types';
 import { resolveAndCompute } from './api';
+import { computeTimeWindow } from './time-window';
 
 interface MiniEngineCtx {
   authentication: string;
   override?: { startTime: number; endTime: number };
+  // Host-injected dashboard timepicker list — required to resolve a Global-mode
+  // window (the envelope only stores the link id, never the inherited data).
+  globalTimepickers?: GTPGlobalTimepicker[];
 }
 
 export async function resolve(
-  envelope: WidgetTemplateEnvelope,
+  envelope: ScatterEnvelope,
   ctx: MiniEngineCtx,
-): Promise<{ config: WidgetTemplateUIConfig; data: DataEntry[] }> {
-  const { startTime, endTime } = computeWindow(envelope, ctx.override);
+): Promise<{ config: ScatterUIConfig; data: DataEntry[]; error: boolean }> {
+  const { startTime, endTime } = computeTimeWindow(
+    envelope.timeConfig,
+    ctx.override,
+    Date.now(),
+    ctx.globalTimepickers ?? [],
+  );
   const bindings = envelope.dynamicBindingPathList ?? [];
 
-  if (bindings.length === 0) return { config: envelope.uiConfig, data: [] };
+  if (bindings.length === 0) return { config: envelope.uiConfig, data: [], error: false };
 
   const UNS_TOPIC_RE = /^uns:[^/]+:\/\//;
   const validBindings = bindings.filter(({ topic }) => {
@@ -29,8 +38,10 @@ export async function resolve(
     return true;
   });
 
+  // A malformed binding is a configuration problem, not a fetch failure — still
+  // resolves to an empty (non-error) result, matching an empty API response.
   if (validBindings.length === 0 && bindings.length > 0) {
-    return { config: envelope.uiConfig, data: [] };
+    return { config: envelope.uiConfig, data: [], error: false };
   }
 
   try {
@@ -45,9 +56,11 @@ export async function resolve(
       endTime,
     );
     const data: DataEntry[] = items.map((item) => ({ key: item.key, value: item.value }));
-    return { config: envelope.uiConfig, data };
+    return { config: envelope.uiConfig, data, error: false };
   } catch {
-    return { config: envelope.uiConfig, data: [] };
+    // error:true ONLY when resolveAndCompute itself throws — an empty data
+    // array from a successful call is NOT an error, just "no data yet".
+    return { config: envelope.uiConfig, data: [], error: true };
   }
 }
 
@@ -61,31 +74,3 @@ export function getSeriesData(key: string, data: DataEntry[]): SeriesPayload | n
   return null;
 }
 
-function computeWindow(
-  envelope: WidgetTemplateEnvelope,
-  override?: { startTime: number; endTime: number },
-): { startTime: number; endTime: number } {
-  if (override) return override;
-  const { timeConfig } = envelope;
-  if (!timeConfig) return { startTime: Date.now() - 86_400_000, endTime: Date.now() };
-  if (timeConfig.type === 'fixed' && timeConfig.startTime && timeConfig.endTime) {
-    return { startTime: timeConfig.startTime, endTime: timeConfig.endTime };
-  }
-  const now = Date.now();
-  const dur = timeConfig.allDurations?.find((d) => d.id === timeConfig.defaultDurationId);
-  if (dur) return { startTime: computePresetStart(dur, now), endTime: now };
-  return { startTime: now - 86_400_000, endTime: now };
-}
-
-function computePresetStart(dur: Duration, now: number): number {
-  const x = dur.x ?? 1;
-  const periodMs: Record<string, number> = {
-    minute: 60_000,
-    hour: 3_600_000,
-    day: 86_400_000,
-    week: 7 * 86_400_000,
-    month: 30 * 86_400_000,
-    year: 365 * 86_400_000,
-  };
-  return now - x * (periodMs[dur.xPeriod] ?? 86_400_000);
-}

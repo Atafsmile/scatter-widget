@@ -1,12 +1,12 @@
-/* WidgetTemplate styles — use design-sdk CSS tokens only, no hardcoded values */
+/* Scatter styles — use design-sdk CSS tokens only, no hardcoded values */
 
 .widget-template {
   width: 100%;
   height: 100%;
   padding: var(--spacing-04, 12px);
-  background: var(--background-default-intense, #fff);
-  border-radius: var(--global-border-radius-large, 8px);
-  border: var(--fds-border-subtle, 1px solid #eee);
+  background: var(--scatter-card-bg, var(--background-default-intense, #fff));
+  border-radius: var(--scatter-card-border-radius, var(--global-border-radius-large, 8px));
+  border: var(--scatter-card-border-width, 1px) solid var(--scatter-card-border-color, #eee);
   color: var(--text-default-primary, #1a1a1a);
 }
 

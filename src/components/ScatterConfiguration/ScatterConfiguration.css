@@ -1,0 +1,91 @@
+/* ScatterConfiguration styles — use design-sdk CSS tokens only */
+
+.wt-config {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.wt-config__header {
+  padding: var(--spacing-05, 16px);
+  border-bottom: var(--fds-border-default, 1px solid #e0e0e0);
+}
+
+.wt-config__title {
+  color: var(--text-default-primary, #192839);
+}
+
+.wt-config__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-05, 16px);
+  display: flex;
+  flex-direction: column;
+  /* Field gap per design-sdk spec is 16px, not the 12px --spacing-04. */
+  gap: var(--spacing-05, 16px);
+}
+
+.wt-config__field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-03, 8px);
+}
+
+.wt-config__label {
+  color: var(--text-default-secondary, #40566d);
+}
+
+.wt-config__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-05, 16px);
+}
+
+.wt-config__section-title {
+  color: var(--text-default-primary, #192839);
+}
+
+/* Time tab — the SDK root (.fds-ttc) is a height:100% flex column that owns its own
+   padding/scroll, so this slot just hands it the region. */
+.wt-time-tab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* .wt-config__body already imposes 16px padding for the Data/Style tabs' raw
+     inputs, but .fds-ttc owns its own padding/scroll — negate the parent's inset
+     so the Time tab isn't double-padded relative to the other two tabs. */
+  margin: calc(-1 * var(--spacing-05, 16px));
+}
+
+.wt-time-tab > .fds-ttc {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Vertically center accordion header rows (SDK pins +/chevron to the top). */
+.wt-time-tab .fds-pa-item__header,
+.wt-time-tab .fds-pa-item__heading-row {
+  align-items: center;
+}
+
+/* Remove Comparison Mode + its dependent deviation / per-source sections — Scatter
+   has no period-over-period comparison concept. */
+.wt-time-tab .fds-ttc__switch-row:has(input[name$="comparisonMode"]),
+.wt-time-tab .fds-ttc__switch-row:has(input[name$="allowPerSourceIndicator"]),
+.wt-time-tab .fds-ttc__deviation,
+.wt-time-tab .fds-ttc__per-source {
+  display: none;
+}
+
+/* Kill leftover periodicity selectors mode="series" doesn't reach:
+   1) the SDK Add/Edit Duration sub-panel (portaled to <body>, so NOT tab-scoped). */
+.fds-adp__body .fds-ttc__required-select:has(.fds-select-input__multi-input) {
+  display: none;
+}
+/* 2) the Fixed picker's inline "Set Duration" periodicity. */
+.wt-time-tab .fds-ttc__cycle-body .fds-ttc__required-select:has(input[name="fixed-duration-periodicity"]) {
+  display: none;
+}

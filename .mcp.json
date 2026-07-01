@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "iosense-staging": {
+      "type": "http",
+      "url": "https://staging-mcp.iosense.io/mcp"
+    }
+  }
+}
