@@ -7,8 +7,10 @@ import { Popover } from '@faclon-labs/design-sdk/Popover';
 import { IconButton } from '@faclon-labs/design-sdk/IconButton';
 import { DropdownMenu, ActionListItem } from '@faclon-labs/design-sdk/DropdownMenu';
 import { ChevronDown, Info, Settings, Menu } from 'lucide-react';
-// Side-effect import — registers the 'polygon' series type (Scatter Zones) on the
-// shared Highcharts instance the design-sdk LineChart renders with (deduped dep).
+// Side-effect imports — the setup shim bridges window._Highcharts to the host's
+// Highcharts, then highcharts-more registers the 'polygon' series type (Scatter
+// Zones) on that instance. Order matters; setup must evaluate first.
+import './highcharts-more-setup';
 import 'highcharts/highcharts-more';
 import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSource, ScatterOverlayPoint, ScatterStyling, StylingFontWeight, TimeTabUIConfig, SeriesPayload } from '../../iosense-sdk/types';
 import { getSeriesData } from '../../iosense-sdk/mini-engine';
@@ -118,6 +120,10 @@ function styleToCssVars(style: ScatterStyling): React.CSSProperties {
     '--scatter-title-font-size': `${style.title.fontSize}px`,
     '--scatter-title-color': style.title.fontColor,
     '--scatter-title-weight': String(fontWeightToCss(style.title.fontWeight)),
+    // The SDK renders the legend as DOM (.fds-chart-legend), not Highcharts SVG —
+    // legend.itemStyle in highchartsOptions never reaches it, so the color has to
+    // travel via CSS. Only advanced mode overrides the token default.
+    ...(style.advancedEnabled ? { '--scatter-legend-color': style.misc.legendTextColor } : {}),
   } as React.CSSProperties;
 }
 
@@ -183,6 +189,8 @@ function clampToFutureLimit(
 }
 
 function formatFixedDurationLabel(tc: TimeTabUIConfig | undefined): string | undefined {
+  const name = tc?.fixed?.duration?.name?.trim();
+  if (name) return name;
   if (tc?.startTime == null || tc?.endTime == null) return undefined;
   return `${new Date(tc.startTime).toLocaleString()} – ${new Date(tc.endTime).toLocaleString()}`;
 }
@@ -219,13 +227,26 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   // title keystroke, and keying on identity made each keystroke snap a manually
   // selected range back to the default.
   const tcKey = JSON.stringify(tc ?? null);
+  // Announce the default window via applyRange (TIME_CHANGE), not bare
+  // setLocalRange — the host's own initial fetch derives timeFrame from
+  // defaultPeriodicity (falling back to "day" on envelopes that lack it), which
+  // returns nothing plottable while every user interaction refetches hourly.
+  // Emitting on mount makes initial load take the exact interaction path.
+  // Gated on config being present: before the host delivers it, tc is undefined
+  // and the emit would push a meaningless "today" window.
+  const hasConfig = config !== undefined;
   useEffect(() => {
-    if (mode !== 'local') return;
+    if (mode !== 'local' || !hasConfig) return;
+    // The host drops its TIME_CHANGE override on a Time-tab change, so the last
+    // emitted window no longer reflects what the chart shows — clear the dedupe
+    // ref or re-clicking the same boundary-anchored preset (e.g. "Yesterday")
+    // would be swallowed as a duplicate and never refetch.
+    lastWindowRef.current = null;
     const preset = tc?.allDurations?.find((d) => d.id === tc?.defaultDurationId);
     if (preset) {
       setLocalPreset(preset.id);
       const { startTime, endTime } = computeDurationWindow(preset, Date.now(), tc?.timezone, tc?.cycleTime);
-      setLocalRange({ start: new Date(startTime), end: new Date(endTime) });
+      applyRange({ start: new Date(startTime), end: new Date(endTime) });
       return;
     }
     // No duration configured yet (fresh chart, Time tab never touched) — default to
@@ -240,8 +261,8 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
       Date.now(),
       tc?.timezone,
     );
-    setLocalRange({ start: new Date(startTime), end: new Date(endTime) });
-  }, [tcKey]);
+    applyRange({ start: new Date(startTime), end: new Date(endTime) });
+  }, [tcKey, hasConfig]);
 
   // Active chart — one of several independent chart panels, switchable via the
   // title-slot dropdown. Declared before any early return (Rules of Hooks).
@@ -265,6 +286,10 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   const [zoneLegends, setZoneLegends] = useState(true);
   const chartInstanceRef = useRef<unknown>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Last window emitted via TIME_CHANGE — a preset click applies the window in
+  // handlePresetSelect, and the SDK DatePicker may fire onRangeChange right after
+  // in the same tick (state not yet flushed), so dedupe through a ref, not state.
+  const lastWindowRef = useRef<{ start: number; end: number } | null>(null);
 
   if (!config) return <NoConfigScreen style={SAFE_STYLING} />;
   if (!isConfigured(config)) return <NoConfigScreen style={style} />;
@@ -299,10 +324,20 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
       const ySeries = seriesFor(`charts[${activeChartIndex}].dataSources[${j}].yField`, source.yField);
       if (!xSeries || !ySeries || xSeries.slots.length === 0 || ySeries.slots.length === 0) {
         // Both axes are bound but one resolved to nothing — a data problem, not a
-        // config problem. Say so instead of silently rendering an empty canvas.
+        // config problem. Say so instead of silently rendering an empty canvas,
+        // and distinguish "no entry for this key" from "entry present but not
+        // series-shaped" (host/engine contract drift) vs "series with zero slots".
+        const describe = (axis: 'X' | 'Y', field: 'xField' | 'yField', series: SeriesPayload | null) => {
+          if (series) return series.slots.length === 0 ? `${axis} axis series has zero slots` : null;
+          const key = `charts[${activeChartIndex}].dataSources[${j}].${field}`;
+          const entry = data.find((d) => d.key === key);
+          return entry
+            ? `${axis} axis entry "${key}" exists but is not series-shaped (no slots)`
+            : `${axis} axis has no data entry for key "${key}" (keys present: ${data.map((d) => d.key).join(', ') || 'none'})`;
+        };
+        const reason = describe('X', 'xField', xSeries) ?? describe('Y', 'yField', ySeries);
         console.warn(
-          `[Scatter] source "${source.label || j}" not plotted — ` +
-          `${!xSeries || xSeries.slots.length === 0 ? 'X' : 'Y'} axis binding returned no series data. ` +
+          `[Scatter] source "${source.label || j}" not plotted — ${reason}. ` +
           `Check the UNS path and time window.`,
         );
         return null;
@@ -332,10 +367,12 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   const zoneOverlays = (activeChart?.zones ?? []).filter((z) => z.points.length >= 2);
   const benchmarkOverlays = (activeChart?.benchmarks ?? []).filter((b) => b.points.length >= 1);
 
+  // showInLegend on the PROP entry, not just the highchartsOptions series — the
+  // SDK's DOM legend is built from the prop list and never sees Highcharts options.
   const legendSeries = [
-    ...zoneOverlays.map((z) => ({ name: z.label || 'Zone', data: [], color: z.color })),
+    ...zoneOverlays.map((z) => ({ name: z.label || 'Zone', data: [], color: z.color, showInLegend: zoneLegends })),
     ...seriesEntries.map(({ source }) => ({ name: source.label || 'Series', data: [], color: source.color })),
-    ...benchmarkOverlays.map((b) => ({ name: b.label || 'Benchmark', data: [], color: b.color })),
+    ...benchmarkOverlays.map((b) => ({ name: b.label || 'Benchmark', data: [], color: b.color, showInLegend: benchmarkLegends })),
   ];
   const legendColors = [
     ...zoneOverlays.map((z) => z.color),
@@ -343,24 +380,38 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
     ...benchmarkOverlays.map((b) => b.color),
   ];
 
-  function handleRangeChange(range: { start: Date; end: Date } | null) {
-    if (!range) return;
+  function applyRange(range: { start: Date; end: Date }) {
     const clamped = clampToFutureLimit(range, futureMaxMs(tc, Date.now()));
-    // Never clear the preset here — the SDK DatePicker fires onRangeChange right
-    // after onPresetSelect for its built-in preset ids; clearing would reset to "Custom".
+    const start = clamped.start.getTime();
+    const end = clamped.end.getTime();
+    if (lastWindowRef.current?.start === start && lastWindowRef.current?.end === end) return;
+    lastWindowRef.current = { start, end };
     setLocalRange(clamped);
     onEvent({
       type: 'TIME_CHANGE',
       payload: {
-        startTime: String(clamped.start.getTime()),
-        endTime: String(clamped.end.getTime()),
+        startTime: String(start),
+        endTime: String(end),
         periodicity: tc?.defaultPeriodicity ?? 'hourly',
       },
     });
   }
 
+  function handleRangeChange(range: { start: Date; end: Date } | null) {
+    // Never clear the preset here — the SDK DatePicker fires onRangeChange right
+    // after onPresetSelect for its built-in preset ids; clearing would reset to "Custom".
+    if (range) applyRange(range);
+  }
+
+  // The preset list comes from tc.allDurations (custom ids the SDK DatePicker
+  // knows nothing about), so it cannot compute the window itself and will not
+  // follow up with an onRangeChange — resolve the duration expression here.
   function handlePresetSelect(value: string) {
     setLocalPreset(value);
+    const preset = tc?.allDurations?.find((d) => d.id === value);
+    if (!preset) return;
+    const { startTime, endTime } = computeDurationWindow(preset, Date.now(), tc?.timezone, tc?.cycleTime);
+    applyRange({ start: new Date(startTime), end: new Date(endTime) });
   }
 
   const durationSlot =
@@ -410,7 +461,6 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   return (
     <div className="widget-template" style={styleToCssVars(style)} ref={containerRef}>
       <LineChart
-        bare={!style.card.wrapInCard}
         title={
           style.hideElements.title
             ? undefined
@@ -427,14 +477,18 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
         actions={
           <div className="scatter-chart-actions">
             {activeChart?.description && (
-              <Tooltip heading={activeChart.title || undefined} bodyText={activeChart.description}>
+              // Description only — the chart title already sits in the header,
+              // repeating it as the tooltip heading reads as duplication.
+              <Tooltip bodyText={activeChart.description}>
                 <IconButton icon={<Info size={16} />} size="Small" accessibilityLabel="Description" />
               </Tooltip>
             )}
             {style.hideElements.settingsIcon !== true && (
               <Popover
                 placement="Bottom"
-                className="scatter-chart-control-popover"
+                // The panel is portaled to document.body — className never reaches
+                // it, but the id lands on the panel div. CSS keys off this id.
+                id="scatter-chart-control-menu"
                 trigger={<IconButton icon={<Settings size={16} />} size="Small" accessibilityLabel="Chart settings" />}
               >
                 <DropdownMenu>
@@ -483,7 +537,7 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
             {style.hideElements.exportIcon !== true && (
               <Popover
                 placement="Bottom"
-                className="scatter-chart-export-popover"
+                id="scatter-chart-export-menu"
                 trigger={<IconButton icon={<Menu size={16} />} size="Small" accessibilityLabel="More options" />}
               >
                 <DropdownMenu>
@@ -523,7 +577,39 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
           )
         }
         highchartsOptions={{
-          chart: { type: 'scatter' },
+          // Transparent canvas — the card background (Wrap Into Card + color) is
+          // owned by .widget-template; the theme's own white must not sit on top.
+          chart: { type: 'scatter', backgroundColor: 'transparent' },
+          // The SDK installs a chart-level shared tooltip formatter, which makes
+          // Highcharts ignore per-series pointFormat entirely — precision has to
+          // be applied inside a replacement formatter. Per-series precision and
+          // axis labels travel via the series' `custom` options bag.
+          tooltip: {
+            shared: false,
+            useHTML: true,
+            formatter: function (this: unknown) {
+              const ctx = this as {
+                x?: number | string;
+                y?: number | null;
+                series?: { name?: string; userOptions?: { custom?: Record<string, unknown> } };
+              };
+              const fmt = (v: number | string | null | undefined, precision: number) => {
+                const n = typeof v === 'string' ? Number(v) : v;
+                return n === null || n === undefined || !Number.isFinite(n) ? '-' : n.toFixed(precision);
+              };
+              const c = (ctx.series?.userOptions?.custom ?? {}) as {
+                xLabel?: string; yLabel?: string; xPrecision?: number; yPrecision?: number;
+              };
+              if (c.xLabel !== undefined) {
+                return (
+                  `${c.xLabel}: <b>${fmt(ctx.x, c.xPrecision ?? 2)}</b><br/>` +
+                  `${c.yLabel ?? 'Y'}: <b>${fmt(ctx.y, c.yPrecision ?? 2)}</b>`
+                );
+              }
+              // Benchmarks and any other non-scatter series.
+              return `${ctx.series?.name ?? ''}: <b>${fmt(ctx.y, 2)}</b>`;
+            },
+          },
           // NEVER pass explicit `undefined` style objects here — the SDK deep-merges
           // these over its theme with Highcharts merge(), which copies undefined and
           // wipes the theme's style defaults; axis/legend render then crashes on
@@ -554,7 +640,8 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
                 }
               : {}),
           },
-          ...(advanced ? { legend: { itemStyle: { color: style.misc.legendTextColor } } } : {}),
+          // Legend text color is NOT set here — the SDK disables the Highcharts
+          // legend and renders its own DOM legend; see --scatter-legend-color.
           // Merged BY INDEX into the `series` prop entries above (the SDK's documented
           // escape-hatch pattern) — same zones → data sources → benchmarks order as
           // legendSeries. Name/color live on the prop entry.
@@ -576,10 +663,13 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
               // Connect Points (Chart Control) — draws a joining line through the series.
               lineWidth: connectPoints ? 1.5 : 0,
               marker: { enabled: true, radius: 4 },
-              tooltip: {
-                pointFormat:
-                  `${activeChart?.xAxisLabel || 'X'}: <b>{point.x:.${source.xPrecision ?? 2}f}</b><br/>` +
-                  `${activeChart?.yAxisLabel || 'Y'}: <b>{point.y:.${source.yPrecision ?? 2}f}</b>`,
+              // Read by the chart-level tooltip formatter above — per-series
+              // tooltip.pointFormat is dead once a chart formatter exists.
+              custom: {
+                xLabel: activeChart?.xAxisLabel || 'X',
+                yLabel: activeChart?.yAxisLabel || 'Y',
+                xPrecision: source.xPrecision ?? 2,
+                yPrecision: source.yPrecision ?? 2,
               },
               dataLabels: {
                 format: `{point.y:.${source.yPrecision ?? 2}f}`,

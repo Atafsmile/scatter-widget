@@ -40,6 +40,12 @@ export default (env, argv) => {
           // global Highcharts object the host page provides, so externalize the whole
           // `highcharts` namespace rather than just the bare specifier.
           ({ request }, callback) => {
+            // highcharts-more must be bundled, not externalized: the host page
+            // loads core highcharts.min.js only, so the 'polygon' series type
+            // (Scatter Zones) would never be registered (Highcharts error #17).
+            // It reads the core instance off window._Highcharts — bridged by
+            // src/components/Scatter/highcharts-more-setup.ts.
+            if (request === 'highcharts/highcharts-more') return callback();
             if (request === 'highcharts' || request.startsWith('highcharts/')) {
               return callback(null, 'Highcharts');
             }

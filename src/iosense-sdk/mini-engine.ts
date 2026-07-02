@@ -84,13 +84,23 @@ export async function resolve(
   }
 }
 
+// `__type: 'series'` is injected by OUR api.ts wrapper — a host engine that maps
+// the resolveAndCompute response itself hands over the raw wire item, where the
+// series payload has `slots` at the top level and no discriminant (and no `value`
+// field at all). Accept anything slot-shaped so the widget works under both.
+function toSeriesPayload(v: unknown): SeriesPayload | null {
+  if (v === null || v === undefined || typeof v !== 'object') return null;
+  const obj = v as Record<string, unknown>;
+  if ((obj as unknown as SeriesPayload).__type === 'series') return v as SeriesPayload;
+  if (Array.isArray(obj.slots)) return { ...obj, __type: 'series' } as unknown as SeriesPayload;
+  return null;
+}
+
 export function getSeriesData(key: string, data: DataEntry[]): SeriesPayload | null {
   const entry = data.find((d) => d.key === key);
   if (!entry) return null;
-  const v = entry.value;
-  if (v !== null && typeof v === 'object' && (v as SeriesPayload).__type === 'series') {
-    return v as SeriesPayload;
-  }
-  return null;
+  // entry.value = wrapped/scalar contract; entry itself = raw response item pushed
+  // straight into the data prop (slots alongside key).
+  return toSeriesPayload(entry.value) ?? toSeriesPayload(entry);
 }
 

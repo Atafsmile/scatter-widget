@@ -3,10 +3,64 @@
 .widget-template {
   width: 100%;
   height: 100%;
+  /* border-box + hidden overflow — the configured border must not add to the
+     100% width (widget grew past its grid cell while drag-resizing) and the
+     radius must clip the chart content. */
+  box-sizing: border-box;
+  overflow: hidden;
   background: var(--scatter-card-bg, var(--background-default-intense, #fff));
   border-radius: var(--scatter-card-border-radius, var(--global-border-radius-large, 8px));
   border: var(--scatter-card-border-width, 1px) solid var(--scatter-card-border-color, #eee);
   color: var(--text-default-primary, #1a1a1a);
+  /* The SDK canvas defaults to min-height 360px, which pushes the legend/footer
+     out of this overflow-hidden box on short widgets. Zero it so the chart
+     flexes to whatever size the host grid gives the widget — the SDK's own
+     ResizeObserver reflows Highcharts to fit. */
+  --fds-chart-canvas-min-height: 0px;
+}
+
+/* Single card: all card chrome (background/border/radius) lives on
+   .widget-template above. The SDK chart renders its own card shell on
+   .fds-chart — flatten it so there is never a card inside a card. */
+.widget-template > .fds-chart {
+  height: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* The SDK paints the title on a white chip (--background-surface-intense) —
+   with Wrap Into Card off (or a custom card color) that chip floats as a
+   stray white box. The card owns all backgrounds. */
+.widget-template .fds-chart__title {
+  background: transparent;
+}
+
+/* Second inner surface: LineChart wraps the Highcharts plot + DOM legend in
+   .fds-line-chart__viewport, which paints --background-surface-intense (white)
+   on its own — a white box over the card color even with .fds-chart and the
+   Highcharts canvas both transparent. The card owns all backgrounds. */
+.widget-template .fds-line-chart__viewport {
+  background-color: transparent;
+}
+
+/* Advanced "Chart Title" styling. The SDK label carries a fixed typography
+   class (HeadingSmallSemibold) and our multi-chart switcher trigger carries
+   BodyLargeSemibold — both must yield to the configured font. */
+.widget-template .fds-chart__title-label,
+.widget-template .scatter-chart-switcher__trigger {
+  font-size: var(--scatter-title-font-size, 18px);
+  font-weight: var(--scatter-title-weight, 600);
+  color: var(--scatter-title-color, var(--text-gray-primary, #192839));
+  line-height: 1.3;
+}
+
+/* Legend is DOM-rendered by the SDK — Highcharts legend.itemStyle never
+   reaches it. Advanced mode sets --scatter-legend-color; otherwise keep the
+   SDK token default. */
+.widget-template .fds-chart-legend__label {
+  color: var(--scatter-legend-color, var(--text-gray-secondary, #40566d));
 }
 
 .widget-template--loading {
@@ -106,8 +160,37 @@
   gap: var(--spacing-03, 8px);
 }
 
-/* ---- Settings (Chart Control) / Export dropdown panels ---- */
-.scatter-chart-control-popover .fds-dropdown-menu,
-.scatter-chart-export-popover .fds-dropdown-menu {
+/* ---- Settings (Chart Control) / Export dropdown panels ----
+   The SDK Popover PORTALS its panel to document.body — a className on the
+   Popover root NEVER reaches the panel, so all panel styling must key off the
+   `id` prop, which the SDK places on the portaled panel div itself. */
+
+/* The default panel is a min(328px, …)-wide card with large padding and an
+   arrow notch — shrink it to hug the menu, like the platform chart menu. */
+#scatter-chart-control-menu,
+#scatter-chart-export-menu {
+  width: auto;
   min-width: 200px;
+  padding: 0;
+}
+
+#scatter-chart-control-menu .fds-popover__arrow,
+#scatter-chart-export-menu .fds-popover__arrow {
+  display: none;
+}
+
+/* The DropdownMenu wrapper paints its own card (background/border/shadow)
+   inside the panel card — flatten it so the panel is the only surface. */
+#scatter-chart-control-menu .fds-dropdown-menu__wrapper,
+#scatter-chart-export-menu .fds-dropdown-menu__wrapper {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+/* Edge-to-edge hairline between "View in full screen" and the Download Type
+   section — the default separator is inset by horizontal padding. */
+#scatter-chart-control-menu .fds-action-list-item--separator,
+#scatter-chart-export-menu .fds-action-list-item--separator {
+  padding: var(--spacing-01, 2px) 0;
 }

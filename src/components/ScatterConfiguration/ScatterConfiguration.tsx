@@ -157,6 +157,12 @@ function adoptSdkTimeConfig(sdkValue: SdkTimeTabUIConfig): TimeTabUIConfig {
     adopted.endTime = null;
   }
 
+  // The host derives its initial-fetch timeFrame from defaultPeriodicity and
+  // falls back to "day" when it's absent — while the widget's TIME_CHANGE falls
+  // back to 'hourly'. Pin the envelope to 'hourly' so the first host fetch uses
+  // the same granularity as every post-interaction refetch.
+  adopted.defaultPeriodicity = adopted.defaultPeriodicity ?? 'hourly';
+
   return adopted;
 }
 
@@ -182,6 +188,9 @@ function withCycleTimeDefaults(tc?: TimeTabUIConfig): TimeTabUIConfig {
     ...base,
     linkTimeWith: mode,
     timeType: mode,
+    // Same 'hourly' pin as adoptSdkTimeConfig — covers envelopes saved before the
+    // Time tab was ever opened (adoptSdkTimeConfig only runs on tab interaction).
+    defaultPeriodicity: base.defaultPeriodicity ?? 'hourly',
     cycleTime: { ...DEFAULT_CYCLE_TIME, ...(base.cycleTime ?? {}) },
     fixed: {
       ...(base.fixed as object | undefined),
