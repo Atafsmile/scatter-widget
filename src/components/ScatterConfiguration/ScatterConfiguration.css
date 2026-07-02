@@ -6,7 +6,19 @@
   height: 100%;
 }
 
+/* The platform shell's .left-sidebar sets `scrollbar-gutter: stable`, permanently
+   reserving ~15px on the right even though .wt-config__body owns the scrolling —
+   so a dead strip sits right of every field. The shell CSS isn't ours to edit, but
+   this bundle loads into the shell page; reclaim the gutter only while this
+   configurator is mounted. !important outranks the Angular-scoped shell rule. */
+.left-sidebar:has(.wt-config) {
+  scrollbar-gutter: auto !important;
+}
+
 .wt-config__header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-03, 8px);
   padding: var(--spacing-05, 16px);
   border-bottom: var(--fds-border-default, 1px solid #e0e0e0);
 }
@@ -44,6 +56,14 @@
 
 .wt-config__section-title {
   color: var(--text-default-primary, #192839);
+}
+
+/* Checkbox sections (Hide Widget Elements) — pin children to the left edge instead
+   of letting the shell stretch/center them, and tighten the title→list gap. The
+   row→row gap comes from CheckboxGroup itself (4px, left-aligned). */
+.wt-config__section--checks {
+  gap: var(--spacing-03, 8px);
+  align-items: flex-start;
 }
 
 /* ---- Section header row (chevron + title + optional badge + trailing add button) ---- */
@@ -88,6 +108,10 @@
   color: var(--text-default-secondary, #40566d);
 }
 
+.wt-config__ds-error {
+  color: var(--text-negative-default, #d92d20);
+}
+
 .wt-config__ds-swatch {
   display: inline-block;
   width: 12px;
@@ -111,10 +135,77 @@
   width: 280px;
 }
 
+/* Header/footer divider lines are inset from the modal edges (aligned with the
+   20px body padding) instead of running full-bleed. */
+.wt-config-ds-modal .fds-modal-header__root > .fds-divider,
+.wt-config-ds-modal .fds-modal-footer > .fds-divider {
+  width: calc(100% - 40px);
+  margin-left: 20px;
+  margin-right: 20px;
+}
+
 .wt-config-ds-modal__body {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-04, 12px);
+}
+
+/* ---- Benchmark / Scatter Zone modal — Axes point rows ---- */
+.wt-config__axes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-03, 8px);
+}
+
+.wt-config__axes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.wt-config__required {
+  color: var(--text-negative-default, #d92d20);
+}
+
+.wt-config__axes-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-03, 8px);
+}
+
+/* Empty-label TextInputs — suppress the label row so X/Y inputs align in one line. */
+.wt-config__axes-row > *:not(:last-child) {
+  flex: 1;
+  min-width: 0;
+}
+
+.wt-config__ds-file {
+  color: var(--text-default-secondary, #40566d);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Upload File mode — template button + dropzone + helper text stack. */
+.wt-config__upload {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-03, 8px);
+}
+
+.wt-config__ds-file-hint {
+  color: var(--text-default-tertiary, #8a97a6);
+}
+
+/* Uploaded-file card — name + remove control, mirrors the proto's file chip. */
+.wt-config__file-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-03, 8px);
+  padding: var(--spacing-03, 8px) var(--spacing-04, 12px);
+  border: var(--fds-border-default, 1px solid #e0e0e0);
+  border-radius: var(--global-border-radius-medium, 6px);
 }
 
 /* Time tab — the SDK root (.fds-ttc) is a height:100% flex column that owns its own

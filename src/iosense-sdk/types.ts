@@ -250,6 +250,28 @@ export interface ScatterDataSource {
   frequency: number;    // seconds
 }
 
+// How the X/Y points of a benchmark/zone were captured — "multiple" = typed into
+// the Axes rows, "upload" = parsed from a validated .csv/.xlsx/.xls file.
+export type ScatterPointsMode = 'multiple' | 'upload';
+
+export interface ScatterOverlayPoint { x: number; y: number; }
+
+// Shared shape for the two chart overlays. STATIC config — labels/colors/points are
+// literal values, never bindable, never in dynamicBindingPathList.
+export interface ScatterOverlay {
+  id: string;              // client-generated, never bindable
+  label: string;
+  color: string;
+  pointsMode: ScatterPointsMode;
+  points: ScatterOverlayPoint[];
+  fileName?: string;       // set when pointsMode === 'upload'
+}
+
+// Benchmark — reference line drawn over the scatter, connecting its points.
+export type ScatterBenchmark = ScatterOverlay;
+// Scatter Zone — shaded region drawn under the scatter points.
+export type ScatterZone = ScatterOverlay;
+
 export interface ScatterChart {
   id: string;              // client-generated, never bindable
   title: string;
@@ -259,6 +281,9 @@ export interface ScatterChart {
   // One scatter series per data source — each source's xField/yField is bindable,
   // resolved as series data (paired by timestamp).
   dataSources: ScatterDataSource[];
+  // Optional (absent on saves that predate the feature) — static overlays.
+  benchmarks?: ScatterBenchmark[];
+  zones?: ScatterZone[];
 }
 
 export interface ScatterUIConfig {

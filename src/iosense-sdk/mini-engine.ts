@@ -41,8 +41,17 @@ export async function resolve(
   // A malformed binding is a configuration problem, not a fetch failure — still
   // resolves to an empty (non-error) result, matching an empty API response.
   if (validBindings.length === 0 && bindings.length > 0) {
+    console.warn(
+      `[MiniEngine] resolveAndCompute NOT called — all ${bindings.length} binding(s) have ` +
+      `invalid topics. Re-pick the data source X/Y paths from the UNS browser.`,
+    );
     return { config: envelope.uiConfig, data: [], error: false };
   }
+
+  console.log(
+    `[MiniEngine] resolveAndCompute → ${validBindings.length}/${bindings.length} bindings, window ` +
+    `${new Date(startTime).toISOString()} → ${new Date(endTime).toISOString()}`,
+  );
 
   try {
     const items = await resolveAndCompute(
@@ -56,6 +65,17 @@ export async function resolve(
       endTime,
     );
     const data: DataEntry[] = items.map((item) => ({ key: item.key, value: item.value }));
+    // The backend dedupes identical topics and silently omits unresolvable ones —
+    // surface which keys came back short so a blank widget is diagnosable.
+    const returnedKeys = new Set(data.map((d) => d.key));
+    const missing = validBindings.filter((b) => !returnedKeys.has(b.key));
+    if (missing.length > 0) {
+      console.warn(
+        `[MiniEngine] ${missing.length}/${validBindings.length} binding(s) had no response entry: ` +
+        missing.map((b) => `${b.key} (${b.topic})`).join(', ') +
+        '. Duplicate topics are deduped server-side; widgets fall back by binding string.',
+      );
+    }
     return { config: envelope.uiConfig, data, error: false };
   } catch {
     // error:true ONLY when resolveAndCompute itself throws — an empty data

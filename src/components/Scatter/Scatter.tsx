@@ -7,7 +7,10 @@ import { Popover } from '@faclon-labs/design-sdk/Popover';
 import { IconButton } from '@faclon-labs/design-sdk/IconButton';
 import { DropdownMenu, ActionListItem } from '@faclon-labs/design-sdk/DropdownMenu';
 import { ChevronDown, Info, Settings, Menu } from 'lucide-react';
-import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSource, ScatterStyling, StylingFontWeight, TimeTabUIConfig } from '../../iosense-sdk/types';
+// Side-effect import — registers the 'polygon' series type (Scatter Zones) on the
+// shared Highcharts instance the design-sdk LineChart renders with (deduped dep).
+import 'highcharts/highcharts-more';
+import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSource, ScatterOverlayPoint, ScatterStyling, StylingFontWeight, TimeTabUIConfig, SeriesPayload } from '../../iosense-sdk/types';
 import { getSeriesData } from '../../iosense-sdk/mini-engine';
 import { timeConfigMode, computeDurationWindow } from '../../iosense-sdk/time-window';
 import { WidgetEmptyState } from '../../iosense-sdk/WidgetEmptyState';
@@ -76,6 +79,24 @@ function normalizeStyling(style: ScatterStyling | undefined): ScatterStyling {
       legendTextColor: safeColor(style.misc?.legendTextColor, SAFE_STYLING.misc.legendTextColor),
     },
   };
+}
+
+// Zone fill — the configured color at low opacity so scatter points stay readable.
+function hexToRgba(hex: string, alpha: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+// Two points are read as opposite rectangle corners; three or more are polygon
+// vertices in the order the user entered them.
+function zonePolygon(points: ScatterOverlayPoint[]): Array<[number, number]> {
+  if (points.length === 2) {
+    const [a, b] = points;
+    return [[a.x, a.y], [b.x, a.y], [b.x, b.y], [a.x, b.y]];
+  }
+  return points.map((p) => [p.x, p.y]);
 }
 
 function fontWeightToCss(weight: StylingFontWeight): number {
@@ -193,10 +214,11 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   const [localPreset, setLocalPreset] = useState<string | undefined>(tc?.defaultDurationId);
 
   // Patch the DatePicker to the configured default duration whenever the Time tab
-  // config actually changes (config only changes on a real configurator edit, never
-  // on a data-only re-resolve, so this never clobbers a manual in-widget selection).
-  // Previously localRange only ever started at null and was never (re)computed from
-  // tc.defaultDurationId, so the picker always showed a blank "Custom" range.
+  // config actually changes. Keyed on the SERIALIZED timeConfig, not the config
+  // object identity — the configurator emits a fresh config object on every style/
+  // title keystroke, and keying on identity made each keystroke snap a manually
+  // selected range back to the default.
+  const tcKey = JSON.stringify(tc ?? null);
   useEffect(() => {
     if (mode !== 'local') return;
     const preset = tc?.allDurations?.find((d) => d.id === tc?.defaultDurationId);
@@ -219,21 +241,28 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
       tc?.timezone,
     );
     setLocalRange({ start: new Date(startTime), end: new Date(endTime) });
-  }, [config]);
+  }, [tcKey]);
 
   // Active chart — one of several independent chart panels, switchable via the
   // title-slot dropdown. Declared before any early return (Rules of Hooks).
+  // Keyed on the chart id list so per-keystroke config emits (new object, same
+  // charts) don't churn the effect.
   const charts = config?.charts ?? [];
+  const chartIdsKey = charts.map((c) => c.id).join('|');
   const [activeChartId, setActiveChartId] = useState<string | undefined>(charts[0]?.id);
   useEffect(() => {
     if (!charts.some((c) => c.id === activeChartId)) setActiveChartId(charts[0]?.id);
-  }, [config]);
+  }, [chartIdsKey]);
 
-  // Chart Control — view-time-only toggles, not persisted config. Highcharts instance
-  // ref feeds exportChart from the Download Type menu.
+  // Chart Control — view-time-only toggles, not persisted config. Defaults mirror the
+  // proto's dropdown states. Highcharts instance ref feeds exportChart from the
+  // Download Type menu.
   const [showLegend, setShowLegend] = useState(true);
-  const [showDataLabels, setShowDataLabels] = useState(false);
-  const [zoomable, setZoomable] = useState(false);
+  const [connectPoints, setConnectPoints] = useState(false);
+  const [benchmarkPoints, setBenchmarkPoints] = useState(false);
+  const [benchmarkLegends, setBenchmarkLegends] = useState(true);
+  const [zonePoints, setZonePoints] = useState(true);
+  const [zoneLegends, setZoneLegends] = useState(true);
   const chartInstanceRef = useRef<unknown>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -248,24 +277,71 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
     points: Array<[number, number]>;
   }
 
-  const seriesEntries: ScatterSeriesEntry[] = (activeChart?.dataSources ?? [])
+  // resolveAndCompute dedupes identical topics — when X and Y (or two sources)
+  // share a UNS path, the response has ONE entry keyed by whichever binding came
+  // first. Index every resolved series by its uiConfig binding string so a key
+  // with no entry of its own can reuse the series resolved under the sibling key.
+  const activeSources = activeChart?.dataSources ?? [];
+  const seriesByBinding = new Map<string, SeriesPayload>();
+  activeSources.forEach((source, j) => {
+    const xs = getSeriesData(`charts[${activeChartIndex}].dataSources[${j}].xField`, data);
+    if (xs && source.xField) seriesByBinding.set(source.xField, xs);
+    const ys = getSeriesData(`charts[${activeChartIndex}].dataSources[${j}].yField`, data);
+    if (ys && source.yField) seriesByBinding.set(source.yField, ys);
+  });
+  const seriesFor = (key: string, binding: string): SeriesPayload | null =>
+    getSeriesData(key, data) ?? seriesByBinding.get(binding) ?? null;
+
+  const seriesEntries: ScatterSeriesEntry[] = activeSources
     .map((source, j) => {
       if (!source.xField || !source.yField) return null;
-      const xSeries = getSeriesData(`charts[${activeChartIndex}].dataSources[${j}].xField`, data);
-      const ySeries = getSeriesData(`charts[${activeChartIndex}].dataSources[${j}].yField`, data);
-      if (!xSeries || !ySeries || xSeries.slots.length === 0 || ySeries.slots.length === 0) return null;
-      const pointCount = Math.min(xSeries.slots.length, ySeries.slots.length);
+      const xSeries = seriesFor(`charts[${activeChartIndex}].dataSources[${j}].xField`, source.xField);
+      const ySeries = seriesFor(`charts[${activeChartIndex}].dataSources[${j}].yField`, source.yField);
+      if (!xSeries || !ySeries || xSeries.slots.length === 0 || ySeries.slots.length === 0) {
+        // Both axes are bound but one resolved to nothing — a data problem, not a
+        // config problem. Say so instead of silently rendering an empty canvas.
+        console.warn(
+          `[Scatter] source "${source.label || j}" not plotted — ` +
+          `${!xSeries || xSeries.slots.length === 0 ? 'X' : 'Y'} axis binding returned no series data. ` +
+          `Check the UNS path and time window.`,
+        );
+        return null;
+      }
+      // Pair by slot timestamp, not array index — the two topics resolve on the
+      // same slot grid, but a missing leading/trailing slot on one side would
+      // shift every pair if matched by index.
+      const yByFrom = new Map(ySeries.slots.map((s) => [s.from, s.value]));
       const points: Array<[number, number]> = [];
-      for (let i = 0; i < pointCount; i++) {
-        const xv = xSeries.slots[i].value;
-        const yv = ySeries.slots[i].value;
-        if (xv !== null && yv !== null) points.push([xv, yv]);
+      for (const slot of xSeries.slots) {
+        const yv = yByFrom.get(slot.from);
+        if (slot.value !== null && yv !== null && yv !== undefined) points.push([slot.value, yv]);
       }
       return points.length > 0 ? { source, points } : null;
     })
     .filter((e): e is ScatterSeriesEntry => e !== null);
 
   const hasData = seriesEntries.length > 0;
+  // "Configured" = at least one source with both axes bound — decides between the
+  // "Data Source not configured" and "No data found" empty states below.
+  const hasConfiguredSource = (activeChart?.dataSources ?? []).some((s) => s.xField && s.yField);
+
+  // Static overlays — zones render beneath the scatter points, benchmarks above.
+  // Both merge BY INDEX into the LineChart `series` prop (name/color for the legend)
+  // and `highchartsOptions.series` (type/data), so the three lists below must stay
+  // in the same order: zones, data sources, benchmarks.
+  const zoneOverlays = (activeChart?.zones ?? []).filter((z) => z.points.length >= 2);
+  const benchmarkOverlays = (activeChart?.benchmarks ?? []).filter((b) => b.points.length >= 1);
+
+  const legendSeries = [
+    ...zoneOverlays.map((z) => ({ name: z.label || 'Zone', data: [], color: z.color })),
+    ...seriesEntries.map(({ source }) => ({ name: source.label || 'Series', data: [], color: source.color })),
+    ...benchmarkOverlays.map((b) => ({ name: b.label || 'Benchmark', data: [], color: b.color })),
+  ];
+  const legendColors = [
+    ...zoneOverlays.map((z) => z.color),
+    ...seriesEntries.map(({ source }) => source.color),
+    ...benchmarkOverlays.map((b) => b.color),
+  ];
 
   function handleRangeChange(range: { start: Date; end: Date } | null) {
     if (!range) return;
@@ -294,6 +370,28 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
         ? formatGlobalDurationLabel(tc)
         : undefined;
 
+  // Chart exists but no data source is wired up yet — the canonical
+  // "Data Source not configured" state, NOT the chart's built-in "No data found"
+  // (that copy is reserved for a configured source that resolved to nothing).
+  if (!hasConfiguredSource) {
+    return (
+      <div className="widget-template scatter-no-source" style={styleToCssVars(style)} ref={containerRef}>
+        {!style.hideElements.title && (
+          <div className="scatter-no-source__header">
+            {charts.length > 1 ? (
+              <ChartTitleSwitcher charts={charts} activeId={activeChart?.id} onSelect={setActiveChartId} />
+            ) : (
+              <span className="BodyLargeSemibold">{activeChart?.title || 'Scatter'}</span>
+            )}
+          </div>
+        )}
+        <div className="scatter-no-source__body">
+          <WidgetEmptyState state="data-source-not-configured" />
+        </div>
+      </div>
+    );
+  }
+
   const presets = (tc?.allDurations ?? []).map((d) => ({
     label: d.label ?? `Last ${d.x ?? 1} ${d.xPeriod}`,
     value: d.id,
@@ -321,7 +419,10 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
               : (activeChart?.title || 'Scatter')
         }
         duration={durationSlot}
-        status={hasData ? undefined : 'not-configured'}
+        // Static overlays (benchmarks/zones) must stay visible even while the
+        // series data hasn't resolved yet — only fall to the "No data found"
+        // canvas state when there is nothing at all to draw.
+        status={hasData || zoneOverlays.length > 0 || benchmarkOverlays.length > 0 ? undefined : 'not-configured'}
         onChartReady={(instance) => { chartInstanceRef.current = instance; }}
         actions={
           <div className="scatter-chart-actions">
@@ -345,16 +446,36 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
                     onClick={() => setShowLegend((v) => !v)}
                   />
                   <ActionListItem
-                    title="Data Labels"
+                    title="Connect Points"
                     selectionType="Multiple"
-                    isSelected={showDataLabels}
-                    onClick={() => setShowDataLabels((v) => !v)}
+                    isSelected={connectPoints}
+                    onClick={() => setConnectPoints((v) => !v)}
+                  />
+                  <ActionListItem contentType="SectionHeading" title="Benchmarks" />
+                  <ActionListItem
+                    title="Point"
+                    selectionType="Multiple"
+                    isSelected={benchmarkPoints}
+                    onClick={() => setBenchmarkPoints((v) => !v)}
                   />
                   <ActionListItem
-                    title="Zoom"
+                    title="Legends"
                     selectionType="Multiple"
-                    isSelected={zoomable}
-                    onClick={() => setZoomable((v) => !v)}
+                    isSelected={benchmarkLegends}
+                    onClick={() => setBenchmarkLegends((v) => !v)}
+                  />
+                  <ActionListItem contentType="SectionHeading" title="Scatter Zone Area" />
+                  <ActionListItem
+                    title="Point"
+                    selectionType="Multiple"
+                    isSelected={zonePoints}
+                    onClick={() => setZonePoints((v) => !v)}
+                  />
+                  <ActionListItem
+                    title="Legends"
+                    selectionType="Multiple"
+                    isSelected={zoneLegends}
+                    onClick={() => setZoneLegends((v) => !v)}
                   />
                 </DropdownMenu>
               </Popover>
@@ -378,10 +499,9 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
           </div>
         }
         categories={[]}
-        series={[]}
+        series={legendSeries}
         showLegend={showLegend}
-        showDataLabels={showDataLabels}
-        colors={seriesEntries.map(({ source }) => source.color)}
+        colors={legendColors}
         filters={
           mode === 'local' ? (
             <DatePicker
@@ -393,38 +513,99 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
               selectedPreset={localPreset}
               onPresetSelect={handlePresetSelect}
             />
-          ) : undefined
+          ) : (
+            // MUST be an empty node, never undefined — the SDK chart substitutes
+            // its own built-in date-range + periodicity toolbar whenever `filters`
+            // is undefined (LineChart hardcodes timeFilter "range+periodicity"),
+            // which put an interactive "Custom / Select range" picker on Fixed and
+            // Global widgets that are not user-adjustable.
+            <></>
+          )
         }
         highchartsOptions={{
-          chart: { type: 'scatter', zooming: { type: zoomable ? 'xy' : undefined } },
+          chart: { type: 'scatter' },
+          // NEVER pass explicit `undefined` style objects here — the SDK deep-merges
+          // these over its theme with Highcharts merge(), which copies undefined and
+          // wipes the theme's style defaults; axis/legend render then crashes on
+          // `undefined.whiteSpace` and the whole widget unmounts. Omit keys instead.
           xAxis: {
             type: 'linear',
-            title: { text: activeChart?.xAxisLabel || 'X', style: advanced ? { color: style.xAxis.textColor } : undefined },
-            labels: { style: advanced ? { color: style.xAxis.textColor } : undefined },
-            lineColor: advanced ? style.xAxis.lineColor : undefined,
-            gridLineColor: advanced ? style.misc.gridLineColor : undefined,
+            title: {
+              text: activeChart?.xAxisLabel || 'X',
+              ...(advanced ? { style: { color: style.xAxis.textColor } } : {}),
+            },
+            ...(advanced
+              ? {
+                  labels: { style: { color: style.xAxis.textColor } },
+                  lineColor: style.xAxis.lineColor,
+                  gridLineColor: style.misc.gridLineColor,
+                }
+              : {}),
           },
           yAxis: {
-            title: { text: activeChart?.yAxisLabel || 'Y', style: advanced ? { color: style.yAxis.textColor } : undefined },
-            labels: { style: advanced ? { color: style.yAxis.textColor } : undefined },
-            gridLineColor: advanced ? style.misc.gridLineColor : undefined,
-          },
-          legend: { itemStyle: advanced ? { color: style.misc.legendTextColor } : undefined },
-          series: seriesEntries.map(({ source, points }) => ({
-            type: 'scatter' as const,
-            name: source.label || 'Series',
-            data: points,
-            color: source.color,
-            dataLabels: advanced
+            title: {
+              text: activeChart?.yAxisLabel || 'Y',
+              ...(advanced ? { style: { color: style.yAxis.textColor } } : {}),
+            },
+            ...(advanced
               ? {
-                  style: {
-                    fontSize: `${style.pointLabel.fontSize}px`,
-                    color: style.pointLabel.fontColor,
-                    fontWeight: String(fontWeightToCss(style.pointLabel.fontWeight)),
-                  },
+                  labels: { style: { color: style.yAxis.textColor } },
+                  gridLineColor: style.misc.gridLineColor,
                 }
-              : undefined,
-          })),
+              : {}),
+          },
+          ...(advanced ? { legend: { itemStyle: { color: style.misc.legendTextColor } } } : {}),
+          // Merged BY INDEX into the `series` prop entries above (the SDK's documented
+          // escape-hatch pattern) — same zones → data sources → benchmarks order as
+          // legendSeries. Name/color live on the prop entry.
+          series: [
+            ...zoneOverlays.map((zone) => ({
+              type: 'polygon' as const,
+              data: zonePolygon(zone.points),
+              color: hexToRgba(zone.color, 0.25),
+              lineWidth: 1,
+              enableMouseTracking: false,
+              marker: { enabled: zonePoints, radius: 3, fillColor: zone.color },
+              showInLegend: zoneLegends,
+              zIndex: 0,
+            })),
+            ...seriesEntries.map(({ source, points }) => ({
+              type: 'scatter' as const,
+              data: points,
+              zIndex: 1,
+              // Connect Points (Chart Control) — draws a joining line through the series.
+              lineWidth: connectPoints ? 1.5 : 0,
+              marker: { enabled: true, radius: 4 },
+              tooltip: {
+                pointFormat:
+                  `${activeChart?.xAxisLabel || 'X'}: <b>{point.x:.${source.xPrecision ?? 2}f}</b><br/>` +
+                  `${activeChart?.yAxisLabel || 'Y'}: <b>{point.y:.${source.yPrecision ?? 2}f}</b>`,
+              },
+              dataLabels: {
+                format: `{point.y:.${source.yPrecision ?? 2}f}`,
+                ...(advanced
+                  ? {
+                      style: {
+                        fontSize: `${style.pointLabel.fontSize}px`,
+                        color: style.pointLabel.fontColor,
+                        fontWeight: String(fontWeightToCss(style.pointLabel.fontWeight)),
+                      },
+                    }
+                  : {}),
+              },
+            })),
+            // Sorted ascending by x — Highcharts requires ordered line data (#15).
+            ...benchmarkOverlays.map((benchmark) => ({
+              type: 'line' as const,
+              data: [...benchmark.points].sort((p, q) => p.x - q.x).map((p) => [p.x, p.y] as [number, number]),
+              dashStyle: 'ShortDash' as const,
+              lineWidth: 2,
+              marker: { enabled: benchmarkPoints, radius: 3 },
+              showInLegend: benchmarkLegends,
+              zIndex: 2,
+              dataLabels: { enabled: false },
+            })),
+          ],
         }}
       />
     </div>

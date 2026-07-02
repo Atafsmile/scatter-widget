@@ -6,18 +6,20 @@ import { Tabs, TabItem } from '@faclon-labs/design-sdk/Tabs';
 import { ColorInput } from '@faclon-labs/design-sdk/ColorPicker';
 import { TextInput } from '@faclon-labs/design-sdk/TextInput';
 import { Switch } from '@faclon-labs/design-sdk/Switch';
-import { Checkbox } from '@faclon-labs/design-sdk/Checkbox';
+import { Checkbox, CheckboxGroup } from '@faclon-labs/design-sdk/Checkbox';
 import { SelectInput } from '@faclon-labs/design-sdk/SelectInput';
 import { DropdownMenu, ActionListItem } from '@faclon-labs/design-sdk/DropdownMenu';
 import { TimeTabConfiguration } from '@faclon-labs/design-sdk/TimeTabConfiguration';
 import { Modal, ModalHeader, ModalBody, ModalFooter, ModalLeadingItem } from '@faclon-labs/design-sdk/Modal';
 import { Button } from '@faclon-labs/design-sdk/Button';
+import { Radio, RadioGroup } from '@faclon-labs/design-sdk/Radio';
+import { UploadCta } from '@faclon-labs/design-sdk/UploadCta';
 import { CounterInput } from '@faclon-labs/design-sdk/CounterInput';
 import { IconButton } from '@faclon-labs/design-sdk/IconButton';
 import { ListCard } from '@faclon-labs/design-sdk/ListCard';
 import { Badge } from '@faclon-labs/design-sdk/Badge';
 import { Tooltip } from '@faclon-labs/design-sdk/Tooltip';
-import { Plus, Trash2, ChevronDown, ChevronUp, Pencil } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronUp, Pencil, ArrowLeft, Download, X } from 'lucide-react';
 import type { TimeTabUIConfig as SdkTimeTabUIConfig } from '@faclon-labs/design-sdk';
 import {
   BindingEntry,
@@ -25,6 +27,8 @@ import {
   ScatterUIConfig,
   ScatterChart,
   ScatterDataSource,
+  ScatterOverlay,
+  ScatterPointsMode,
   ScatterStyling,
   StylingFontWeight,
   TimeTabUIConfig,
@@ -32,6 +36,7 @@ import {
   GTPTimeType,
   GTPCycleTimeConfig,
 } from '../../iosense-sdk/types';
+import { parsePointsFile, downloadPointsTemplate } from './points-file';
 import { useUNSTree } from '../../iosense-sdk/useUNSTree';
 import type { UNSTree } from '../../iosense-sdk/useUNSTree';
 import { computeTimeWindow } from '../../iosense-sdk/time-window';
@@ -56,9 +61,18 @@ interface ScatterConfigurationProps {
   isLoadingTree?: boolean;
   onLoadWorkspaces?: () => void;
   resolveUNSValue?: (rawValue: string) => string;
+
+  // Host-injected: return to the widget-type list (parity with built-in
+  // configurators like Gauge). No-op in the dev harness.
+  onBack?: () => void;
 }
 
 const VARIABLE_REGEX = /^\{\{(.+)\}\}$/;
+
+// Canonical UNS binding as stored in uiConfig — anything else never produces a
+// resolvable dynamicBindingPathList entry (the mini-engine drops non-uns: topics),
+// so the resolveAndCompute service would never be called for that source.
+const UNS_BINDING_REGEX = /^\{\{uns:[^/]+:\/\/.+\}\}$/;
 
 function buildDynamicBindingPathList(
   scanTarget: unknown,
@@ -250,6 +264,90 @@ let chartSeq = 0;
 function makeChartId(): string {
   chartSeq += 1;
   return `chart_${Date.now()}_${chartSeq}`;
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark / Scatter Zone overlays — identical form (label, color, points mode,
+// X/Y axes rows) differing only in copy + default color, so one modal serves both.
+// ---------------------------------------------------------------------------
+
+type OverlayKind = 'benchmark' | 'zone';
+
+const OVERLAY_COPY: Record<OverlayKind, {
+  chartKey: 'benchmarks' | 'zones';
+  addTitle: string;
+  editTitle: string;
+  labelPlaceholder: string;
+  colorLabel: string;
+  defaultColor: string;
+  addAction: string;
+  updateAction: string;
+  deleteTitle: string;
+  deleteBody: string;
+}> = {
+  benchmark: {
+    chartKey: 'benchmarks',
+    addTitle: 'Add Benchmark',
+    editTitle: 'Edit Benchmark',
+    labelPlaceholder: 'Enter benchmark label',
+    colorLabel: 'Benchmark Color',
+    defaultColor: '#3B82F6',
+    addAction: 'Add Benchmark',
+    updateAction: 'Update Benchmark',
+    deleteTitle: 'Delete benchmark?',
+    deleteBody: 'This will remove the benchmark line from this chart. Other benchmarks will not be affected.',
+  },
+  zone: {
+    chartKey: 'zones',
+    addTitle: 'Add Scatter Zone',
+    editTitle: 'Edit Scatter Zone',
+    labelPlaceholder: 'Enter scatter zone label',
+    colorLabel: 'Scatter Zone Color',
+    defaultColor: '#4ED18F',
+    addAction: 'Add Scatter Zone',
+    updateAction: 'Update Scatter Zone',
+    deleteTitle: 'Delete scatter zone?',
+    deleteBody: 'This will remove the shaded zone from this chart. Other zones will not be affected.',
+  },
+};
+
+let overlaySeq = 0;
+function makeOverlayId(kind: OverlayKind): string {
+  overlaySeq += 1;
+  return `${kind}_${Date.now()}_${overlaySeq}`;
+}
+
+// Points are edited as strings (numeric TextInputs) and converted on save.
+interface OverlayDraft {
+  id: string;
+  label: string;
+  color: string;
+  pointsMode: ScatterPointsMode;
+  rows: Array<{ x: string; y: string }>;
+  fileName?: string;
+}
+
+function makeEmptyOverlayDraft(kind: OverlayKind): OverlayDraft {
+  return {
+    id: makeOverlayId(kind),
+    label: '',
+    color: OVERLAY_COPY[kind].defaultColor,
+    pointsMode: 'multiple',
+    rows: [{ x: '', y: '' }],
+  };
+}
+
+function overlayToDraft(overlay: ScatterOverlay): OverlayDraft {
+  return {
+    id: overlay.id,
+    label: overlay.label,
+    color: overlay.color,
+    pointsMode: overlay.pointsMode,
+    rows: overlay.points.length > 0
+      ? overlay.points.map((p) => ({ x: String(p.x), y: String(p.y) }))
+      : [{ x: '', y: '' }],
+    fileName: overlay.fileName,
+  };
 }
 
 // Sentinel id for a brand-new chart's live WIDGET PREVIEW only — never persisted to
@@ -447,23 +545,25 @@ function StylingSection({
 
       <Divider variant="Muted" />
 
-      <div className="wt-config__section">
+      <div className="wt-config__section wt-config__section--checks">
         <span className="wt-config__section-title BodySmallSemibold">Hide Widget Elements</span>
-        <Checkbox
-          label="Setting Icon"
-          checked={value.hideElements.settingsIcon}
-          onChange={(e) => update('hideElements', { settingsIcon: e.target.checked })}
-        />
-        <Checkbox
-          label="Export Icon"
-          checked={value.hideElements.exportIcon}
-          onChange={(e) => update('hideElements', { exportIcon: e.target.checked })}
-        />
-        <Checkbox
-          label="Chart Title"
-          checked={value.hideElements.title}
-          onChange={(e) => update('hideElements', { title: e.target.checked })}
-        />
+        <CheckboxGroup>
+          <Checkbox
+            label="Setting Icon"
+            checked={value.hideElements.settingsIcon}
+            onChange={(e) => update('hideElements', { settingsIcon: e.target.checked })}
+          />
+          <Checkbox
+            label="Export Icon"
+            checked={value.hideElements.exportIcon}
+            onChange={(e) => update('hideElements', { exportIcon: e.target.checked })}
+          />
+          <Checkbox
+            label="Chart Title"
+            checked={value.hideElements.title}
+            onChange={(e) => update('hideElements', { title: e.target.checked })}
+          />
+        </CheckboxGroup>
       </div>
 
       <Divider variant="Muted" />
@@ -479,7 +579,7 @@ function StylingSection({
           <Divider variant="Muted" />
 
           <div className="wt-config__section">
-            <span className="wt-config__section-title BodySmallSemibold">Title</span>
+            <span className="wt-config__section-title BodySmallSemibold">Chart Title</span>
             <CounterInput
               label="Font Size"
               leadingLabel="px"
@@ -595,7 +695,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   const [activeTab, setActiveTab] = useState<'data' | 'time' | 'style'>('data');
 
   // Charts — each chart owns its own Chart Settings fields + data sources.
-  const [charts, setCharts] = useState<ScatterChart[]>(config?.uiConfig.charts ?? []);
+  const [charts, setCharts] = useState<ScatterChart[]>(config?.uiConfig?.charts ?? []);
   const [activeChartId, setActiveChartId] = useState<string | null>(charts[0]?.id ?? null);
 
   // Inline Chart Settings edit state — Save/Cancel committed, mirrors the Data Source
@@ -606,9 +706,13 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     charts[0] ? chartToDraft(charts[0]) : makeEmptyChartDraft(),
   );
 
-  // Delete confirmation — shared between chart delete and data-source delete.
+  // Delete confirmation — shared between chart / data-source / benchmark / zone delete.
   const [deleteTarget, setDeleteTarget] = useState<
-    { kind: 'chart'; id: string } | { kind: 'dataSource'; id: string } | null
+    | { kind: 'chart'; id: string }
+    | { kind: 'dataSource'; id: string }
+    | { kind: 'benchmark'; id: string }
+    | { kind: 'zone'; id: string }
+    | null
   >(null);
 
   // Add/Edit Data Source modal — editingSourceId === null means "add new". Operates on
@@ -616,6 +720,14 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   const [isSourceModalOpen, setIsSourceModalOpen] = useState(false);
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [draftSource, setDraftSource] = useState<ScatterDataSource>(makeEmptyDataSource());
+  const [sourceError, setSourceError] = useState<string | null>(null);
+
+  // Add/Edit Benchmark or Scatter Zone modal — one modal serves both kinds.
+  // editingOverlayId === null means "add new". Operates on the active chart.
+  const [overlayModal, setOverlayModal] = useState<{ kind: OverlayKind; editingId: string | null } | null>(null);
+  const [overlayDraft, setOverlayDraft] = useState<OverlayDraft>(makeEmptyOverlayDraft('benchmark'));
+  const [overlayError, setOverlayError] = useState<string | null>(null);
+  const [isParsingFile, setIsParsingFile] = useState(false);
 
   // Collapsible Data-tab sections.
   const [isDataSourceOpen, setIsDataSourceOpen] = useState(true);
@@ -631,9 +743,9 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   // tell "this config update is just our own echo" apart from a genuine external one.
   const lastEmittedEnvelope = useRef<ScatterEnvelope | null>(null);
 
-  const [styling, setStyling] = useState<ScatterStyling>(normalizeStyling(config?.uiConfig.style));
+  const [styling, setStyling] = useState<ScatterStyling>(normalizeStyling(config?.uiConfig?.style));
   const [timeTabConfig, setTimeTabConfig] = useState<TimeTabUIConfig | undefined>(
-    withCycleTimeDefaults(config?.uiConfig.timeConfig),
+    withCycleTimeDefaults(config?.uiConfig?.timeConfig),
   );
 
   const effectiveGlobalTimepickers = globalTimepickers ?? GLOBAL_TIMEPICKER_FALLBACK;
@@ -661,15 +773,15 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   // different saved widget instance), which is the only case this effect should act on.
   useEffect(() => {
     if (!config || config === lastEmittedEnvelope.current) return;
-    const nextCharts = config.uiConfig.charts ?? [];
+    const nextCharts = config.uiConfig?.charts ?? [];
     setCharts(nextCharts);
     const fallback = nextCharts[0] ?? null;
     setActiveChartId(fallback?.id ?? null);
     setChartDraft(fallback ? chartToDraft(fallback) : makeEmptyChartDraft());
     setIsEditingChart(nextCharts.length === 0);
     setEditingChartId(null);
-    setStyling(normalizeStyling(config.uiConfig.style));
-    setTimeTabConfig(withCycleTimeDefaults(config.uiConfig.timeConfig));
+    setStyling(normalizeStyling(config.uiConfig?.style));
+    setTimeTabConfig(withCycleTimeDefaults(config.uiConfig?.timeConfig));
   }, [config]);
 
   const activeChart = charts.find((c) => c.id === activeChartId);
@@ -679,6 +791,9 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   // re-lock while Chart Settings is mid-edit (so the section they'd operate on can't
   // shift out from under them).
   const chartScopedSectionsEnabled = charts.length > 0 && !isEditingChart;
+  // Benchmark / Scatter Zone additionally need at least one data source on the active
+  // chart — overlays only make sense drawn over a configured scatter series.
+  const overlaySectionsEnabled = chartScopedSectionsEnabled && dataSources.length > 0;
 
   function emit(overrides?: {
     charts?: ScatterChart[];
@@ -818,6 +933,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     }
     setEditingSourceId(null);
     setDraftSource(makeEmptyDataSource());
+    setSourceError(null);
     setIsSourceModalOpen(true);
   }
 
@@ -829,11 +945,13 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     }
     setEditingSourceId(source.id);
     setDraftSource({ ...source });
+    setSourceError(null);
     setIsSourceModalOpen(true);
   }
 
   function closeSourceModal() {
     setIsSourceModalOpen(false);
+    setSourceError(null);
   }
 
   function handleDeleteSource(id: string, e: React.MouseEvent) {
@@ -842,7 +960,22 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   }
 
   function handleSubmitSource() {
-    if (!draftSource.label.trim() || !draftSource.xField.trim() || !draftSource.yField.trim()) return;
+    if (!draftSource.label.trim() || !draftSource.xField.trim() || !draftSource.yField.trim()) {
+      setSourceError('Label, X Axis and Y Axis UNS paths are required.');
+      return;
+    }
+    if (!UNS_BINDING_REGEX.test(draftSource.xField.trim()) || !UNS_BINDING_REGEX.test(draftSource.yField.trim())) {
+      setSourceError(
+        'X/Y paths must be UNS bindings — type / to pick a node from the browser. ' +
+        'A plain text path is never sent to the data service.',
+      );
+      return;
+    }
+    if (draftSource.frequency <= 30) {
+      setSourceError('Frequency must be greater than 30 Sec.');
+      return;
+    }
+    setSourceError(null);
     const next = editingSourceId
       ? dataSources.map((s) => (s.id === editingSourceId ? draftSource : s))
       : [...dataSources, draftSource];
@@ -850,11 +983,129 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     setIsSourceModalOpen(false);
   }
 
+  // ---- Benchmark / Scatter Zone overlays (per active chart) ----
+
+  const benchmarks = activeChart?.benchmarks ?? [];
+  const zones = activeChart?.zones ?? [];
+
+  function overlaysOf(kind: OverlayKind): ScatterOverlay[] {
+    return kind === 'benchmark' ? benchmarks : zones;
+  }
+
+  function commitOverlays(kind: OverlayKind, next: ScatterOverlay[]) {
+    if (activeChartIndex < 0) return;
+    const key = OVERLAY_COPY[kind].chartKey;
+    commitCharts(charts.map((c, i) => (i === activeChartIndex ? { ...c, [key]: next } : c)));
+  }
+
+  function openOverlayModal(kind: OverlayKind, overlay: ScatterOverlay | null, e?: React.MouseEvent) {
+    e?.stopPropagation();
+    if (configRef.current) {
+      const rect = configRef.current.getBoundingClientRect();
+      setModalX(rect.right + 30);
+      setModalY(rect.top);
+    }
+    setOverlayModal({ kind, editingId: overlay?.id ?? null });
+    setOverlayDraft(overlay ? overlayToDraft(overlay) : makeEmptyOverlayDraft(kind));
+    setOverlayError(null);
+    setIsParsingFile(false);
+  }
+
+  function closeOverlayModal() {
+    setOverlayModal(null);
+    setOverlayError(null);
+    setIsParsingFile(false);
+  }
+
+  function updateOverlayRow(index: number, patch: Partial<{ x: string; y: string }>) {
+    setOverlayDraft((d) => ({
+      ...d,
+      rows: d.rows.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    }));
+  }
+
+  function addOverlayRow() {
+    setOverlayDraft((d) => ({ ...d, rows: [...d.rows, { x: '', y: '' }] }));
+  }
+
+  function removeOverlayRow(index: number) {
+    setOverlayDraft((d) => ({
+      ...d,
+      rows: d.rows.length > 1 ? d.rows.filter((_, i) => i !== index) : d.rows,
+    }));
+  }
+
+  async function handleOverlayFile(files: FileList) {
+    const file = files[0];
+    if (!file) return;
+    setIsParsingFile(true);
+    setOverlayError(null);
+    const result = await parsePointsFile(file);
+    setIsParsingFile(false);
+    if (!result.ok) {
+      setOverlayError(result.error);
+      return;
+    }
+    // Success behaviour per spec — parsed data auto-populates the X/Y axes fields.
+    setOverlayDraft((d) => ({
+      ...d,
+      rows: result.points.map((p) => ({ x: String(p.x), y: String(p.y) })),
+      fileName: file.name,
+    }));
+  }
+
+  function handleSubmitOverlay() {
+    if (!overlayModal) return;
+    const { kind, editingId } = overlayModal;
+    if (!overlayDraft.label.trim()) {
+      setOverlayError('Label is required.');
+      return;
+    }
+    // Fully blank rows are dropped; a partly-filled or non-numeric row is an error.
+    const rows = overlayDraft.rows.filter((r) => r.x.trim() !== '' || r.y.trim() !== '');
+    if (rows.length === 0) {
+      setOverlayError('At least one X/Y point is required.');
+      return;
+    }
+    const invalid = rows.some(
+      (r) => !Number.isFinite(Number(r.x.trim())) || !Number.isFinite(Number(r.y.trim())) || r.x.trim() === '' || r.y.trim() === '',
+    );
+    if (invalid) {
+      setOverlayError('Every point needs numeric X and Y values.');
+      return;
+    }
+    setOverlayError(null);
+    const overlay: ScatterOverlay = {
+      id: overlayDraft.id,
+      label: overlayDraft.label.trim(),
+      color: overlayDraft.color,
+      pointsMode: overlayDraft.pointsMode,
+      points: rows.map((r) => ({ x: Number(r.x.trim()), y: Number(r.y.trim()) })),
+      fileName: overlayDraft.pointsMode === 'upload' ? overlayDraft.fileName : undefined,
+    };
+    const current = overlaysOf(kind);
+    const next = editingId ? current.map((o) => (o.id === editingId ? overlay : o)) : [...current, overlay];
+    commitOverlays(kind, next);
+    closeOverlayModal();
+  }
+
   function confirmDelete() {
     if (!deleteTarget) return;
     if (deleteTarget.kind === 'chart') deleteChart(deleteTarget.id);
-    else commitDataSources(dataSources.filter((s) => s.id !== deleteTarget.id));
+    else if (deleteTarget.kind === 'dataSource') commitDataSources(dataSources.filter((s) => s.id !== deleteTarget.id));
+    else commitOverlays(deleteTarget.kind, overlaysOf(deleteTarget.kind).filter((o) => o.id !== deleteTarget.id));
     setDeleteTarget(null);
+  }
+
+  // UNSPathInput fires onChange ONLY when a value is committed through the SDK's
+  // own paths (tree-leaf click, or paste that resolves against the LOADED tree).
+  // A typed/pasted "{{uns:wsId://…}}" binding stays internal draft text — visible
+  // in the field but never handed to us — so Add Source failed "required" checks
+  // even though the user could see the topic. Adopt it on blur straight from the
+  // textarea: a canonical binding is valid regardless of tree state.
+  function adoptTypedBinding(raw: string, apply: (v: string) => void) {
+    const resolved = resolveUNSValue(raw.trim());
+    if (UNS_BINDING_REGEX.test(resolved)) apply(resolved);
   }
 
   function handleStylingChange(next: ScatterStyling) {
@@ -865,8 +1116,13 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   function handleTimeChange(value: SdkTimeTabUIConfig) {
     const adopted = adoptSdkTimeConfig(value);
     // The SDK fires onChange once on mount with an unchanged value — dedupe so
-    // merely opening the tab doesn't emit a spurious envelope change.
-    if (JSON.stringify(adopted) === JSON.stringify(timeTabConfig)) return;
+    // merely opening the tab doesn't emit a spurious envelope change. Compare with
+    // the pinned window blanked: adoptSdkTimeConfig re-pins fixed-mode startTime/
+    // endTime from Date.now() on every call, so the raw JSON never matches and the
+    // mount echo would refetch (and reset the widget's time override) for nothing.
+    const strip = (t?: TimeTabUIConfig) =>
+      t ? JSON.stringify({ ...t, startTime: null, endTime: null }) : undefined;
+    if (strip(adopted) === strip(timeTabConfig)) return;
     setTimeTabConfig(adopted);
     emit({ timeTabConfig: adopted });
   }
@@ -874,6 +1130,13 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   return (
     <div className="wt-config" ref={configRef}>
       <div className="wt-config__header">
+        <IconButton
+          icon={<ArrowLeft size={20} />}
+          size="Small"
+          style={{ color: 'var(--text-default-primary, #192839)' }}
+          onClick={() => props.onBack?.()}
+          accessibilityLabel="Back"
+        />
         <span className="wt-config__title BodyLargeSemibold">Scatter</span>
       </div>
 
@@ -1018,35 +1281,85 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
 
             <Divider variant="Muted" />
 
-            {/* ---- Benchmarking (placeholder, locked until a chart exists) ---- */}
+            {/* ---- Benchmark (scoped to the active chart; locked until one exists) ---- */}
             <div className="wt-config__section">
               <SectionHeader
-                title="Benchmarking"
+                title="Benchmark"
+                count={benchmarks.length > 0 ? benchmarks.length : undefined}
                 isOpen={isBenchmarkingOpen}
-                onToggle={chartScopedSectionsEnabled ? () => setIsBenchmarkingOpen((o) => !o) : undefined}
-                onAdd={chartScopedSectionsEnabled ? (e) => e.stopPropagation() : undefined}
-                isDisabled={!chartScopedSectionsEnabled}
+                onToggle={overlaySectionsEnabled ? () => setIsBenchmarkingOpen((o) => !o) : undefined}
+                onAdd={overlaySectionsEnabled ? (e) => openOverlayModal('benchmark', null, e) : undefined}
+                showChevron={benchmarks.length > 0}
+                isDisabled={!overlaySectionsEnabled}
                 addLabel="Add Benchmark"
               />
-              {chartScopedSectionsEnabled && isBenchmarkingOpen && (
-                <span className="wt-config__ds-empty BodySmallRegular">Coming soon.</span>
+              {overlaySectionsEnabled && isBenchmarkingOpen && (
+                <div className="wt-config__ds-list">
+                  {benchmarks.length === 0 && (
+                    <span className="wt-config__ds-empty BodySmallRegular">No benchmarks yet — click + to add one.</span>
+                  )}
+                  {benchmarks.map((benchmark, index) => (
+                    <ListCard
+                      key={benchmark.id}
+                      title={benchmark.label || `Benchmark ${index + 1}`}
+                      leadingItem={<span className="wt-config__ds-swatch" style={{ backgroundColor: benchmark.color }} />}
+                      trailingItems={
+                        <Tooltip bodyText="Delete">
+                          <IconButton
+                            icon={<Trash2 size={16} />}
+                            size="Small"
+                            style={{ color: 'var(--text-negative-default, #d92d20)' }}
+                            onClick={(e) => { e.stopPropagation(); setDeleteTarget({ kind: 'benchmark', id: benchmark.id }); }}
+                            accessibilityLabel="Delete benchmark"
+                          />
+                        </Tooltip>
+                      }
+                      onClick={() => openOverlayModal('benchmark', benchmark)}
+                    />
+                  ))}
+                </div>
               )}
             </div>
 
             <Divider variant="Muted" />
 
-            {/* ---- Scatter Zone (placeholder, locked until a chart exists) ---- */}
+            {/* ---- Scatter Zone (scoped to the active chart; locked until one exists) ---- */}
             <div className="wt-config__section">
               <SectionHeader
                 title="Scatter Zone"
+                count={zones.length > 0 ? zones.length : undefined}
                 isOpen={isScatterZoneOpen}
-                onToggle={chartScopedSectionsEnabled ? () => setIsScatterZoneOpen((o) => !o) : undefined}
-                onAdd={chartScopedSectionsEnabled ? (e) => e.stopPropagation() : undefined}
-                isDisabled={!chartScopedSectionsEnabled}
-                addLabel="Add Zone"
+                onToggle={overlaySectionsEnabled ? () => setIsScatterZoneOpen((o) => !o) : undefined}
+                onAdd={overlaySectionsEnabled ? (e) => openOverlayModal('zone', null, e) : undefined}
+                showChevron={zones.length > 0}
+                isDisabled={!overlaySectionsEnabled}
+                addLabel="Add Scatter Zone"
               />
-              {chartScopedSectionsEnabled && isScatterZoneOpen && (
-                <span className="wt-config__ds-empty BodySmallRegular">Coming soon.</span>
+              {overlaySectionsEnabled && isScatterZoneOpen && (
+                <div className="wt-config__ds-list">
+                  {zones.length === 0 && (
+                    <span className="wt-config__ds-empty BodySmallRegular">No scatter zones yet — click + to add one.</span>
+                  )}
+                  {zones.map((zone, index) => (
+                    <ListCard
+                      key={zone.id}
+                      title={zone.label || `Scatter Zone ${index + 1}`}
+                      leadingItem={<span className="wt-config__ds-swatch" style={{ backgroundColor: zone.color }} />}
+                      trailingItems={
+                        <Tooltip bodyText="Delete">
+                          <IconButton
+                            icon={<Trash2 size={16} />}
+                            size="Small"
+                            style={{ color: 'var(--text-negative-default, #d92d20)' }}
+                            onClick={(e) => { e.stopPropagation(); setDeleteTarget({ kind: 'zone', id: zone.id }); }}
+                            accessibilityLabel="Delete scatter zone"
+                          />
+                        </Tooltip>
+                      }
+                      onClick={() => openOverlayModal('zone', zone)}
+                    />
+                  ))}
+                </div>
               )}
             </div>
 
@@ -1058,7 +1371,11 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                 onClose={() => setDeleteTarget(null)}
                 header={
                   <ModalHeader
-                    title={deleteTarget.kind === 'chart' ? 'Delete chart?' : 'Delete data source?'}
+                    title={
+                      deleteTarget.kind === 'chart' ? 'Delete chart?'
+                        : deleteTarget.kind === 'dataSource' ? 'Delete data source?'
+                        : OVERLAY_COPY[deleteTarget.kind].deleteTitle
+                    }
                     leadingItem={
                       <ModalLeadingItem leading="Icon" icon={<Trash2 size={20} />} className="wt-config__delete-icon" />
                     }
@@ -1076,7 +1393,9 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                   bodyText={
                     deleteTarget.kind === 'chart'
                       ? 'This will permanently remove the active chart and its configuration. Other charts in this widget will not be affected.'
-                      : 'This will remove the configured data source and its UNS binding from this chart. You can add a new data source afterwards.'
+                      : deleteTarget.kind === 'dataSource'
+                        ? 'This will remove the configured data source and its UNS binding from this chart. You can add a new data source afterwards.'
+                        : OVERLAY_COPY[deleteTarget.kind].deleteBody
                   }
                 />
               </Modal>
@@ -1117,7 +1436,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                       label="Label"
                       isRequired
                       necessityIndicator="required"
-                      placeholder="Enter configuration label"
+                      placeholder="Enter data source label"
                       value={draftSource.label}
                       onChange={({ value }) => setDraftSource((d) => ({ ...d, label: value }))}
                     />
@@ -1131,6 +1450,9 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                         const resolved = resolveUNSValue(value);
                         setDraftSource((d) => ({ ...d, xField: resolved }));
                       }}
+                      onBlur={(e) =>
+                        adoptTypedBinding(e.target.value, (v) => setDraftSource((d) => ({ ...d, xField: v })))
+                      }
                       onOpen={() => loadWorkspaces()}
                     />
                     <CounterInput
@@ -1149,6 +1471,9 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                         const resolved = resolveUNSValue(value);
                         setDraftSource((d) => ({ ...d, yField: resolved }));
                       }}
+                      onBlur={(e) =>
+                        adoptTypedBinding(e.target.value, (v) => setDraftSource((d) => ({ ...d, yField: v })))
+                      }
                       onOpen={() => loadWorkspaces()}
                     />
                     <CounterInput
@@ -1167,6 +1492,161 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                       value={draftSource.frequency}
                       onChange={(frequency) => setDraftSource((d) => ({ ...d, frequency }))}
                     />
+                    {sourceError && (
+                      <span className="wt-config__ds-error BodySmallRegular">{sourceError}</span>
+                    )}
+                  </div>
+                </ModalBody>
+              </Modal>
+            )}
+
+            {/* ---- Add/Edit Benchmark & Scatter Zone modal (Configurator Overlay Pattern) ---- */}
+            {overlayModal && (
+              <Modal
+                {...({ transparent: true } as any)}
+                isOpen
+                positionX={modalX}
+                positionY={modalY}
+                className="wt-config-ds-modal"
+                onClose={closeOverlayModal}
+                header={
+                  <ModalHeader
+                    title={overlayModal.editingId ? OVERLAY_COPY[overlayModal.kind].editTitle : OVERLAY_COPY[overlayModal.kind].addTitle}
+                    onClose={closeOverlayModal}
+                  />
+                }
+                footer={
+                  <ModalFooter
+                    stacking="Vertical"
+                    primaryAction={
+                      <Button
+                        variant="Primary"
+                        label={overlayModal.editingId ? OVERLAY_COPY[overlayModal.kind].updateAction : OVERLAY_COPY[overlayModal.kind].addAction}
+                        onClick={handleSubmitOverlay}
+                        isFullWidth
+                      />
+                    }
+                  />
+                }
+              >
+                <ModalBody>
+                  <div className="wt-config-ds-modal__body">
+                    <TextInput
+                      label="Label"
+                      isRequired
+                      necessityIndicator="required"
+                      placeholder={OVERLAY_COPY[overlayModal.kind].labelPlaceholder}
+                      value={overlayDraft.label}
+                      onChange={({ value }) => setOverlayDraft((d) => ({ ...d, label: value }))}
+                    />
+                    <ColorInput
+                      label={OVERLAY_COPY[overlayModal.kind].colorLabel}
+                      placeholder="Select a color"
+                      value={overlayDraft.color}
+                      onChange={(color) => setOverlayDraft((d) => ({ ...d, color }))}
+                    />
+                    <RadioGroup
+                      name={`${overlayModal.kind}-points-mode`}
+                      label="Benchmark Points"
+                      size="Medium"
+                      orientation="Horizontal"
+                      value={overlayDraft.pointsMode}
+                      onChange={({ value }) => setOverlayDraft((d) => ({ ...d, pointsMode: value as ScatterPointsMode }))}
+                    >
+                      <Radio label="Multiple" value="multiple" />
+                      <Radio label="Upload File" value="upload" />
+                    </RadioGroup>
+
+                    {overlayDraft.pointsMode === 'upload' && (
+                      <div className="wt-config__upload">
+                        <span className="wt-config__label BodySmallSemibold">Bulk Upload Template</span>
+                        <Button
+                          variant="Gray"
+                          size="Small"
+                          isFullWidth
+                          label="Download Template"
+                          leadingIcon={<Download size={16} />}
+                          onClick={() =>
+                            downloadPointsTemplate(
+                              overlayModal.kind === 'benchmark' ? 'Benchmark_Template.xlsx' : 'Scatter_Zone_Template.xlsx',
+                            )
+                          }
+                        />
+                        {overlayDraft.fileName ? (
+                          <div className="wt-config__file-card">
+                            <span className="wt-config__ds-file BodySmallRegular">{overlayDraft.fileName}</span>
+                            <IconButton
+                              icon={<X size={16} />}
+                              size="Small"
+                              onClick={() =>
+                                setOverlayDraft((d) => ({ ...d, fileName: undefined, rows: [{ x: '', y: '' }] }))
+                              }
+                              accessibilityLabel="Remove file"
+                            />
+                          </div>
+                        ) : (
+                          <UploadCta
+                            bodyText="Drag files here or"
+                            linkText="Upload"
+                            accept=".csv,.xlsx,.xls"
+                            isDisabled={isParsingFile}
+                            onFilesSelect={(files: FileList) => { void handleOverlayFile(files); }}
+                          />
+                        )}
+                        <span className="wt-config__ds-file-hint BodySmallRegular">Supports .xls, .xlsx and .csv files.</span>
+                      </div>
+                    )}
+
+                    {/* Axes rows — in upload mode these are the auto-populated values,
+                        shown once a file has parsed (per the spec's success behaviour). */}
+                    {(overlayDraft.pointsMode === 'multiple' || overlayDraft.fileName) && (
+                      <div className="wt-config__axes">
+                        <div className="wt-config__axes-header">
+                          <span className="wt-config__label BodySmallSemibold">
+                            Axes<span className="wt-config__required">*</span>
+                          </span>
+                          <Tooltip bodyText="Add point">
+                            <IconButton
+                              icon={<Plus size={16} />}
+                              size="Small"
+                              onClick={addOverlayRow}
+                              accessibilityLabel="Add point"
+                            />
+                          </Tooltip>
+                        </div>
+                        {overlayDraft.rows.map((row, index) => (
+                          <div className="wt-config__axes-row" key={index}>
+                            <TextInput
+                              label=""
+                              type="number"
+                              prefix="X"
+                              placeholder="Enter value"
+                              value={row.x}
+                              onChange={({ value }) => updateOverlayRow(index, { x: value })}
+                            />
+                            <TextInput
+                              label=""
+                              type="number"
+                              prefix="Y"
+                              placeholder="Enter value"
+                              value={row.y}
+                              onChange={({ value }) => updateOverlayRow(index, { y: value })}
+                            />
+                            <IconButton
+                              icon={<Trash2 size={16} />}
+                              size="Small"
+                              isDisabled={overlayDraft.rows.length === 1}
+                              onClick={() => removeOverlayRow(index)}
+                              accessibilityLabel="Remove point"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {overlayError && (
+                      <span className="wt-config__ds-error BodySmallRegular">{overlayError}</span>
+                    )}
                   </div>
                 </ModalBody>
               </Modal>

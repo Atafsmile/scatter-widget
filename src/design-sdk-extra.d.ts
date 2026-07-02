@@ -1,5 +1,5 @@
 declare module '@faclon-labs/design-sdk/UNSPathInput' {
-  import type { FC } from 'react';
+  import type { FC, FocusEvent } from 'react';
 
   type UNSTree = { [key: string]: UNSTree | null };
 
@@ -10,6 +10,8 @@ declare module '@faclon-labs/design-sdk/UNSPathInput' {
     tree?: UNSTree;
     isLoading?: boolean;
     onChange: (value: string) => void;
+    /** Forwarded to the underlying textarea — fires BEFORE the SDK's own commit logic. */
+    onBlur?: (e: FocusEvent<HTMLTextAreaElement>) => void;
     onOpen?: () => void;
   }
 

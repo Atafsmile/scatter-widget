@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Scatter } from './components/Scatter/Scatter';
 import { ScatterConfiguration } from './components/ScatterConfiguration/ScatterConfiguration';
 import { ScatterEnvelope, DataEntry, WidgetEvent } from './iosense-sdk/types';
@@ -22,6 +22,12 @@ export default function App() {
   const [auth, setAuth] = useState<string>(localStorage.getItem('bearer_token') ?? '');
   const [timeOverride, setTimeOverride] = useState<{ startTime: number; endTime: number } | undefined>(undefined);
   const [retryTick, setRetryTick] = useState(0);
+  // Monotonic id per resolve() call — a late response from a superseded request
+  // must never overwrite data/error from a newer one.
+  const requestSeq = useRef(0);
+  // What the last resolve() was actually asked (bindings + window) — envelope
+  // changes that don't alter this (style/title keystrokes) skip the network call.
+  const lastFetchKey = useRef('');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -43,13 +49,35 @@ export default function App() {
 
   useEffect(() => {
     if (!envelope || !auth) return;
+    const fetchKey = JSON.stringify({
+      bindings: envelope.dynamicBindingPathList,
+      timeConfig: envelope.timeConfig ?? null,
+      override: timeOverride ?? null,
+      auth,
+      retryTick,
+    });
+    if (fetchKey === lastFetchKey.current) return;
+    lastFetchKey.current = fetchKey;
+
+    const seq = ++requestSeq.current;
     console.log('[App] resolving envelope:', envelope.dynamicBindingPathList, 'override:', timeOverride);
     resolve(envelope, { authentication: auth, override: timeOverride, globalTimepickers }).then(({ data: resolved, error }) => {
+      if (seq !== requestSeq.current) return;
       console.log('[App] resolved data:', resolved, 'error:', error);
       setData(resolved);
       setFetchError(error);
     });
   }, [envelope, auth, timeOverride, retryTick]);
+
+  // A widget-level DatePicker override must not outlive the Time tab config it was
+  // picked under — when the configurator emits a different timeConfig, drop the
+  // override so the new configuration actually drives the fetch window.
+  function handleEnvelopeChange(next: ScatterEnvelope) {
+    if (envelope && JSON.stringify(envelope.timeConfig ?? null) !== JSON.stringify(next.timeConfig ?? null)) {
+      setTimeOverride(undefined);
+    }
+    setEnvelope(next);
+  }
 
   function handleEvent(event: WidgetEvent) {
     console.log('[Widget Event]', event);
@@ -67,7 +95,7 @@ export default function App() {
         <ScatterConfiguration
           config={envelope}
           authentication={auth}
-          onChange={setEnvelope}
+          onChange={handleEnvelopeChange}
           globalTimepickers={globalTimepickers}
         />
       </div>

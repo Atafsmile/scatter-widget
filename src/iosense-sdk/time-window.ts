@@ -163,11 +163,12 @@ function resolveBound(
   count: number | undefined,
   period: GTPPeriod | undefined,
   event: GTPEvent | undefined,
+  direction: -1 | 0 | 1,
   tz: string,
   cycleTime: GTPCycleTimeConfig | undefined,
 ): number {
   const p = period ?? 'day';
-  const shifted = addPeriods(referenceMs, p, -(count ?? 0), tz);
+  const shifted = addPeriods(referenceMs, p, direction * (count ?? 0), tz);
   switch (event) {
     case 'Now': return shifted;
     case 'End': return endOfPeriod(shifted, p, tz, cycleTime);
@@ -196,32 +197,28 @@ export function timeConfigMode(tc: TimeTabUIConfig | undefined): GTPTimeType {
 }
 
 // A duration is a RELATIVE expression, never absolute timestamps: start bound
-// (x, xPeriod, xEvent) + end bound (y, yPeriod, yEvent), each resolved from `nowMs`
-// then the whole window shifted by `navigation` (Previous/Current/Next).
+// (x, xPeriod, xEvent) + end bound (y, yPeriod, yEvent), each resolved from `nowMs`.
+// `navigation` is the DIRECTION of the x/y offsets, not an extra shift: the SDK's
+// built-in presets encode "Yesterday" as { navigation: Previous, x: 1 day Start,
+// y: 1 day End } and "Previous Month" as { Previous, x: 1 month Start, y: 1 month
+// End } — the offsets already position the window fully. Shifting again by the
+// window span (the old behaviour) returned "Today" as yesterday and pinned the
+// Fixed picker's default month one month too early.
 export function computeDurationWindow(
   expr: DurationExpr | GTPPreset,
   nowMs: number,
   tz: string = 'UTC',
   cycleTime?: GTPCycleTimeConfig,
 ): { startTime: number; endTime: number } {
-  let startTime = resolveBound(nowMs, expr.x, expr.xPeriod, expr.xEvent, tz, cycleTime);
-  let endTime = resolveBound(nowMs, expr.y, expr.yPeriod, expr.yEvent, tz, cycleTime);
+  const nav = expr.navigation ?? 'Previous';
+  const direction = nav === 'Next' ? 1 : nav === 'Current' ? 0 : -1;
+  let startTime = resolveBound(nowMs, expr.x, expr.xPeriod, expr.xEvent, direction, tz, cycleTime);
+  let endTime = resolveBound(nowMs, expr.y, expr.yPeriod, expr.yEvent, direction, tz, cycleTime);
   if (endTime < startTime) {
     const tmp = startTime;
     startTime = endTime;
     endTime = tmp;
   }
-
-  const span = endTime - startTime;
-  const nav = expr.navigation ?? 'Current';
-  if (nav === 'Previous') {
-    startTime -= span;
-    endTime -= span;
-  } else if (nav === 'Next') {
-    startTime += span;
-    endTime += span;
-  }
-
   return { startTime, endTime };
 }
 
