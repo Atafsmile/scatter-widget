@@ -140,11 +140,9 @@
   justify-content: center;
 }
 
-/* ---- Chart switcher — clickable title + DropdownMenu, shown when there are 2+ charts ---- */
-.scatter-chart-switcher {
-  position: relative;
-}
-
+/* ---- Chart switcher — clickable title + anchored Popover menu, shown when
+   there are 2+ charts. The panel is portaled (see #scatter-chart-title-menu
+   below), so no positioning context is needed here. ---- */
 .scatter-chart-switcher__trigger {
   display: flex;
   align-items: center;
@@ -160,37 +158,8 @@
   gap: var(--spacing-03, 8px);
 }
 
-/* ---- Settings (Chart Control) / Export dropdown panels ----
-   The SDK Popover PORTALS its panel to document.body — a className on the
-   Popover root NEVER reaches the panel, so all panel styling must key off the
-   `id` prop, which the SDK places on the portaled panel div itself. */
-
-/* The default panel is a min(328px, …)-wide card with large padding and an
-   arrow notch — shrink it to hug the menu, like the platform chart menu. */
-#scatter-chart-control-menu,
-#scatter-chart-export-menu {
-  width: auto;
-  min-width: 200px;
-  padding: 0;
-}
-
-#scatter-chart-control-menu .fds-popover__arrow,
-#scatter-chart-export-menu .fds-popover__arrow {
-  display: none;
-}
-
-/* The DropdownMenu wrapper paints its own card (background/border/shadow)
-   inside the panel card — flatten it so the panel is the only surface. */
-#scatter-chart-control-menu .fds-dropdown-menu__wrapper,
-#scatter-chart-export-menu .fds-dropdown-menu__wrapper {
-  background: transparent;
-  border: none;
-  box-shadow: none;
-}
-
-/* Edge-to-edge hairline between "View in full screen" and the Download Type
-   section — the default separator is inset by horizontal padding. */
-#scatter-chart-control-menu .fds-action-list-item--separator,
-#scatter-chart-export-menu .fds-action-list-item--separator {
-  padding: var(--spacing-01, 2px) 0;
-}
+/* ---- Title / Settings / Export dropdown panels ----
+   The SDK Popover PORTALS its panel to document.body — outside the widget
+   subtree, where this (host-scoped) stylesheet cannot reach it. All panel
+   styling lives in popover-panel-styles.ts, injected into document.head at
+   runtime so it applies in both the dev harness and the platform. */

@@ -254,6 +254,21 @@ export interface ScatterDataSource {
 // the Axes rows, "upload" = parsed from a validated .csv/.xlsx/.xls file.
 export type ScatterPointsMode = 'multiple' | 'upload';
 
+// Highcharts dashStyle values — stored verbatim; the configurator shows the
+// spaced English label ("Short Dash Dot") but persists the Highcharts name.
+export type ScatterDashStyle =
+  | 'Solid'
+  | 'ShortDash'
+  | 'ShortDot'
+  | 'ShortDashDot'
+  | 'ShortDashDotDot'
+  | 'Dot'
+  | 'Dash'
+  | 'LongDash'
+  | 'DashDot'
+  | 'LongDashDot'
+  | 'LongDashDotDot';
+
 export interface ScatterOverlayPoint { x: number; y: number; }
 
 // Shared shape for the two chart overlays. STATIC config — labels/colors/points are
@@ -265,6 +280,10 @@ export interface ScatterOverlay {
   pointsMode: ScatterPointsMode;
   points: ScatterOverlayPoint[];
   fileName?: string;       // set when pointsMode === 'upload'
+  // Benchmark line styling only (zones ignore both). Optional — absent on saves
+  // that predate the fields; the widget defaults to 1px / 'Solid'.
+  lineWidth?: number;
+  dashStyle?: ScatterDashStyle;
 }
 
 // Benchmark — reference line drawn over the scatter, connecting its points.

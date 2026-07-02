@@ -27,6 +27,7 @@ import {
   ScatterUIConfig,
   ScatterChart,
   ScatterDataSource,
+  ScatterDashStyle,
   ScatterOverlay,
   ScatterPointsMode,
   ScatterStyling,
@@ -320,6 +321,55 @@ const OVERLAY_COPY: Record<OverlayKind, {
   },
 };
 
+// Stored value is the Highcharts dashStyle name; the dropdown shows the spaced
+// English label. Order mirrors the Highcharts docs.
+const DASH_STYLES: Array<{ value: ScatterDashStyle; label: string }> = [
+  { value: 'Solid', label: 'Solid' },
+  { value: 'ShortDash', label: 'Short Dash' },
+  { value: 'ShortDot', label: 'Short Dot' },
+  { value: 'ShortDashDot', label: 'Short Dash Dot' },
+  { value: 'ShortDashDotDot', label: 'Short Dash Dot Dot' },
+  { value: 'Dot', label: 'Dot' },
+  { value: 'Dash', label: 'Dash' },
+  { value: 'LongDash', label: 'Long Dash' },
+  { value: 'DashDot', label: 'Dash Dot' },
+  { value: 'LongDashDot', label: 'Long Dash Dot' },
+  { value: 'LongDashDotDot', label: 'Long Dash Dot Dot' },
+];
+
+function DashStyleSelect({
+  value,
+  onChange,
+}: {
+  value: ScatterDashStyle;
+  onChange: (v: ScatterDashStyle) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const active = DASH_STYLES.find((s) => s.value === value);
+  return (
+    <div className="wt-config__dash-select">
+      <SelectInput label="Dash Style" value={active?.label ?? value} isOpen={isOpen} onOpenChange={setIsOpen} onClick={() => setIsOpen((o) => !o)}>
+        {isOpen && (
+          <DropdownMenu>
+            {DASH_STYLES.map((s) => (
+              <ActionListItem
+                key={s.value}
+                title={s.label}
+                selectionType="Single"
+                isSelected={value === s.value}
+                onClick={() => {
+                  onChange(s.value);
+                  setIsOpen(false);
+                }}
+              />
+            ))}
+          </DropdownMenu>
+        )}
+      </SelectInput>
+    </div>
+  );
+}
+
 let overlaySeq = 0;
 function makeOverlayId(kind: OverlayKind): string {
   overlaySeq += 1;
@@ -331,6 +381,8 @@ interface OverlayDraft {
   id: string;
   label: string;
   color: string;
+  width: string;             // benchmark line width in px — edited as string, like rows
+  dashStyle: ScatterDashStyle;
   pointsMode: ScatterPointsMode;
   rows: Array<{ x: string; y: string }>;
   fileName?: string;
@@ -341,6 +393,8 @@ function makeEmptyOverlayDraft(kind: OverlayKind): OverlayDraft {
     id: makeOverlayId(kind),
     label: '',
     color: OVERLAY_COPY[kind].defaultColor,
+    width: '1',
+    dashStyle: 'Solid',
     pointsMode: 'multiple',
     rows: [{ x: '', y: '' }],
   };
@@ -351,6 +405,8 @@ function overlayToDraft(overlay: ScatterOverlay): OverlayDraft {
     id: overlay.id,
     label: overlay.label,
     color: overlay.color,
+    width: String(overlay.lineWidth ?? 1),
+    dashStyle: overlay.dashStyle ?? 'Solid',
     pointsMode: overlay.pointsMode,
     rows: overlay.points.length > 0
       ? overlay.points.map((p) => ({ x: String(p.x), y: String(p.y) }))
@@ -1084,10 +1140,14 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
       return;
     }
     setOverlayError(null);
+    // Blank / non-numeric / non-positive width falls back to the 1px default.
+    const width = Number(overlayDraft.width.trim());
     const overlay: ScatterOverlay = {
       id: overlayDraft.id,
       label: overlayDraft.label.trim(),
       color: overlayDraft.color,
+      lineWidth: Number.isFinite(width) && width > 0 ? width : 1,
+      dashStyle: overlayDraft.dashStyle,
       pointsMode: overlayDraft.pointsMode,
       points: rows.map((r) => ({ x: Number(r.x.trim()), y: Number(r.y.trim()) })),
       fileName: overlayDraft.pointsMode === 'upload' ? overlayDraft.fileName : undefined,
@@ -1554,6 +1614,21 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                       value={overlayDraft.color}
                       onChange={(color) => setOverlayDraft((d) => ({ ...d, color }))}
                     />
+                    {overlayModal.kind === 'benchmark' && (
+                      <div className="wt-config__field-row">
+                        <TextInput
+                          label="Width"
+                          type="number"
+                          placeholder="1"
+                          value={overlayDraft.width}
+                          onChange={({ value }) => setOverlayDraft((d) => ({ ...d, width: value }))}
+                        />
+                        <DashStyleSelect
+                          value={overlayDraft.dashStyle}
+                          onChange={(dashStyle) => setOverlayDraft((d) => ({ ...d, dashStyle }))}
+                        />
+                      </div>
+                    )}
                     <RadioGroup
                       name={`${overlayModal.kind}-points-mode`}
                       label="Benchmark Points"

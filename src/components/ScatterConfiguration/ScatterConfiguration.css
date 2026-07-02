@@ -150,6 +150,25 @@
   gap: var(--spacing-04, 12px);
 }
 
+/* Benchmark Width + Dash Style side-by-side row */
+.wt-config__field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-03, 8px);
+  align-items: start;
+}
+
+.wt-config__field-row > * {
+  min-width: 0;
+}
+
+/* Dash Style dropdown list — the menu inherits the narrow half-width column,
+   truncating labels like "Long Dash Dot Dot". Widen it independently. */
+.wt-config__dash-select .fds-dropdown-menu__wrapper {
+  min-width: 180px;
+  width: max-content;
+}
+
 /* ---- Benchmark / Scatter Zone modal — Axes point rows ---- */
 .wt-config__axes {
   display: flex;

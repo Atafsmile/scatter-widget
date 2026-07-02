@@ -16,7 +16,12 @@ import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSourc
 import { getSeriesData } from '../../iosense-sdk/mini-engine';
 import { timeConfigMode, computeDurationWindow } from '../../iosense-sdk/time-window';
 import { WidgetEmptyState } from '../../iosense-sdk/WidgetEmptyState';
+import { injectPopoverPanelStyles } from './popover-panel-styles';
 import './Scatter.css';
+
+// Popover panels portal to document.body, outside the widget's scoped
+// stylesheet — their styling must be injected into the top document.
+injectPopoverPanelStyles();
 
 interface ScatterProps {
   config: ScatterUIConfig | undefined;
@@ -148,12 +153,22 @@ function ChartTitleSwitcher({
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const active = charts.find((c) => c.id === activeId);
+  // Same anchored-Popover pattern as the settings/export menus — the panel is
+  // portaled and pinned to the trigger, so it floats over the widget content
+  // instead of shifting with the in-flow layout.
   return (
     <div className="scatter-chart-switcher">
-      <div className="scatter-chart-switcher__trigger BodyLargeSemibold" onClick={() => setIsOpen((o) => !o)}>
-        {active?.title || 'Scatter'} <ChevronDown size={14} />
-      </div>
-      {isOpen && (
+      <Popover
+        placement="Bottom Start"
+        id="scatter-chart-title-menu"
+        isOpen={isOpen}
+        onOpenChange={setIsOpen}
+        trigger={
+          <div className="scatter-chart-switcher__trigger BodyLargeSemibold">
+            {active?.title || 'Scatter'} <ChevronDown size={14} />
+          </div>
+        }
+      >
         <DropdownMenu>
           {charts.map((c) => (
             <ActionListItem
@@ -165,7 +180,7 @@ function ChartTitleSwitcher({
             />
           ))}
         </DropdownMenu>
-      )}
+      </Popover>
     </div>
   );
 }
@@ -484,6 +499,9 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
               </Tooltip>
             )}
             {style.hideElements.settingsIcon !== true && (
+              // Tooltip wraps the whole Popover (not just the trigger) so the
+              // Popover's click-to-open wiring on its trigger stays intact.
+              <Tooltip bodyText="Chart settings" placement="Top">
               <Popover
                 placement="Bottom"
                 // The panel is portaled to document.body — className never reaches
@@ -533,8 +551,10 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
                   />
                 </DropdownMenu>
               </Popover>
+              </Tooltip>
             )}
             {style.hideElements.exportIcon !== true && (
+              <Tooltip bodyText="Export" placement="Top">
               <Popover
                 placement="Bottom"
                 id="scatter-chart-export-menu"
@@ -549,6 +569,7 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
                   ))}
                 </DropdownMenu>
               </Popover>
+              </Tooltip>
             )}
           </div>
         }
@@ -688,8 +709,9 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
             ...benchmarkOverlays.map((benchmark) => ({
               type: 'line' as const,
               data: [...benchmark.points].sort((p, q) => p.x - q.x).map((p) => [p.x, p.y] as [number, number]),
-              dashStyle: 'ShortDash' as const,
-              lineWidth: 2,
+              // Absent on envelopes saved before the fields existed — 'Solid' / 1px.
+              dashStyle: benchmark.dashStyle ?? ('Solid' as const),
+              lineWidth: benchmark.lineWidth ?? 1,
               marker: { enabled: benchmarkPoints, radius: 3 },
               showInLegend: benchmarkLegends,
               zIndex: 2,
