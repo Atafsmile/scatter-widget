@@ -46,6 +46,77 @@
   color: var(--text-default-primary, #192839);
 }
 
+/* ---- Section header row (chevron + title + optional badge + trailing add button) ---- */
+.wt-config__section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.wt-config__section-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-02, 4px);
+}
+
+.wt-config__section-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-02, 4px);
+}
+
+.wt-config__section-header.is-disabled .wt-config__section-title {
+  color: var(--text-default-tertiary, #8a97a6);
+}
+
+/* ---- Chart Settings — Save/Cancel row ---- */
+.wt-config__chart-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-03, 8px);
+}
+
+/* ---- Data Source list ---- */
+.wt-config__ds-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-03, 8px);
+}
+
+.wt-config__ds-empty {
+  color: var(--text-default-secondary, #40566d);
+}
+
+.wt-config__ds-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ---- Delete confirmation modal — trash icon in a light-red box ---- */
+.wt-config__delete-icon {
+  width: 32px;
+  height: 32px;
+  padding: var(--spacing-03, 8px);
+  border-radius: var(--global-border-radius-medium, 6px);
+  background: var(--background-error-secondary, #fee2e2);
+  color: var(--text-error-default, #d92d20);
+}
+
+/* ---- Add/Edit Data Source modal — Configurator Overlay Pattern ---- */
+.wt-config-ds-modal .fds-modal {
+  width: 280px;
+}
+
+.wt-config-ds-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-04, 12px);
+}
+
 /* Time tab — the SDK root (.fds-ttc) is a height:100% flex column that owns its own
    padding/scroll, so this slot just hands it the region. */
 .wt-time-tab {
@@ -72,9 +143,11 @@
 }
 
 /* Remove Comparison Mode + its dependent deviation / per-source sections — Scatter
-   has no period-over-period comparison concept. */
+   has no period-over-period comparison concept. Also remove Disable Periodicities —
+   Scatter's durations are series-based, not periodicity-driven. */
 .wt-time-tab .fds-ttc__switch-row:has(input[name$="comparisonMode"]),
 .wt-time-tab .fds-ttc__switch-row:has(input[name$="allowPerSourceIndicator"]),
+.wt-time-tab .fds-ttc__switch-row:has(input[name$="disablePeriodicities"]),
 .wt-time-tab .fds-ttc__deviation,
 .wt-time-tab .fds-ttc__per-source {
   display: none;

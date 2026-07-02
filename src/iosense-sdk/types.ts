@@ -239,12 +239,34 @@ export interface ScatterStyling {
 // Scatter widget config + envelope
 // ---------------------------------------------------------------------------
 
+export interface ScatterDataSource {
+  id: string;          // client-generated, never bindable
+  label: string;        // static display string, never bindable
+  xField: string;       // bindable — "" or "{{uns:wsId://...}}"
+  xPrecision: number;
+  yField: string;       // bindable — "" or "{{uns:wsId://...}}"
+  yPrecision: number;
+  color: string;
+  frequency: number;    // seconds
+}
+
+export interface ScatterChart {
+  id: string;              // client-generated, never bindable
+  title: string;
+  description?: string;
+  xAxisLabel?: string;
+  yAxisLabel?: string;
+  // One scatter series per data source — each source's xField/yField is bindable,
+  // resolved as series data (paired by timestamp).
+  dataSources: ScatterDataSource[];
+}
+
 export interface ScatterUIConfig {
-  // Bindable — user types {{topic}}, resolved as series data (paired by timestamp).
-  xField?: string;
-  yField?: string;
+  // Independent chart panels — the widget renders one at a time, switchable.
+  charts: ScatterChart[];
   // Mirror of envelope.timeConfig — the widget only ever receives `config` (=uiConfig),
-  // never the envelope root, so the Time tab's config must be duplicated here.
+  // never the envelope root, so the Time tab's config must be duplicated here. Shared
+  // across all charts, not per-chart.
   timeConfig?: TimeTabUIConfig;
   style: ScatterStyling;
 }

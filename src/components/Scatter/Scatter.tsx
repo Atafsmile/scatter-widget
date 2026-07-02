@@ -1,9 +1,15 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { DatePicker } from '@faclon-labs/design-sdk/DatePicker';
 import { LineChart } from '@faclon-labs/design-sdk/LineChart';
-import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterStyling, StylingFontWeight, TimeTabUIConfig } from '../../iosense-sdk/types';
+import { exportChart, type ChartExportFormat } from '@faclon-labs/design-sdk/Chart';
+import { Tooltip } from '@faclon-labs/design-sdk/Tooltip';
+import { Popover } from '@faclon-labs/design-sdk/Popover';
+import { IconButton } from '@faclon-labs/design-sdk/IconButton';
+import { DropdownMenu, ActionListItem } from '@faclon-labs/design-sdk/DropdownMenu';
+import { ChevronDown, Info, Settings, Menu } from 'lucide-react';
+import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSource, ScatterStyling, StylingFontWeight, TimeTabUIConfig } from '../../iosense-sdk/types';
 import { getSeriesData } from '../../iosense-sdk/mini-engine';
-import { timeConfigMode } from '../../iosense-sdk/time-window';
+import { timeConfigMode, computeDurationWindow } from '../../iosense-sdk/time-window';
 import { WidgetEmptyState } from '../../iosense-sdk/WidgetEmptyState';
 import './Scatter.css';
 
@@ -94,8 +100,47 @@ function styleToCssVars(style: ScatterStyling): React.CSSProperties {
   } as React.CSSProperties;
 }
 
+// Gates the OUTER "Widget not configured" empty state — once a chart exists, the
+// header/title/actions render regardless of whether its data sources are wired up
+// yet; the canvas-level "No data found" state (status="not-configured" on LineChart)
+// handles that finer-grained case while keeping the header interactive.
 function isConfigured(config: ScatterUIConfig | undefined): boolean {
-  return Boolean(config?.xField && config?.yField);
+  return Boolean(config?.charts && config.charts.length > 0);
+}
+
+// LineChart's title accepts a ReactNode — a clickable label + DropdownMenu composed
+// by the consumer, per the SDK's own documented "Custom Title Slot" pattern.
+function ChartTitleSwitcher({
+  charts,
+  activeId,
+  onSelect,
+}: {
+  charts: ScatterChart[];
+  activeId?: string;
+  onSelect: (id: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const active = charts.find((c) => c.id === activeId);
+  return (
+    <div className="scatter-chart-switcher">
+      <div className="scatter-chart-switcher__trigger BodyLargeSemibold" onClick={() => setIsOpen((o) => !o)}>
+        {active?.title || 'Scatter'} <ChevronDown size={14} />
+      </div>
+      {isOpen && (
+        <DropdownMenu>
+          {charts.map((c) => (
+            <ActionListItem
+              key={c.id}
+              title={c.title || 'Untitled'}
+              selectionType="Single"
+              isSelected={c.id === activeId}
+              onClick={() => { onSelect(c.id); setIsOpen(false); }}
+            />
+          ))}
+        </DropdownMenu>
+      )}
+    </div>
+  );
 }
 
 function futureMaxMs(tc: TimeTabUIConfig | undefined, now: number): number | null {
@@ -137,14 +182,6 @@ function NoConfigScreen({ style }: { style: ScatterStyling }) {
   );
 }
 
-function NoDataScreen({ style }: { style: ScatterStyling }) {
-  return (
-    <div className="widget-template widget-template__empty" style={styleToCssVars(style)}>
-      <WidgetEmptyState state="data-not-available" />
-    </div>
-  );
-}
-
 export function Scatter({ config, data, onEvent }: ScatterProps) {
   const style = normalizeStyling(config?.style);
   const tc = config?.timeConfig;
@@ -155,23 +192,80 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   const [localRange, setLocalRange] = useState<{ start: Date; end: Date } | null>(null);
   const [localPreset, setLocalPreset] = useState<string | undefined>(tc?.defaultDurationId);
 
+  // Patch the DatePicker to the configured default duration whenever the Time tab
+  // config actually changes (config only changes on a real configurator edit, never
+  // on a data-only re-resolve, so this never clobbers a manual in-widget selection).
+  // Previously localRange only ever started at null and was never (re)computed from
+  // tc.defaultDurationId, so the picker always showed a blank "Custom" range.
+  useEffect(() => {
+    if (mode !== 'local') return;
+    const preset = tc?.allDurations?.find((d) => d.id === tc?.defaultDurationId);
+    if (preset) {
+      setLocalPreset(preset.id);
+      const { startTime, endTime } = computeDurationWindow(preset, Date.now(), tc?.timezone, tc?.cycleTime);
+      setLocalRange({ start: new Date(startTime), end: new Date(endTime) });
+      return;
+    }
+    // No duration configured yet (fresh chart, Time tab never touched) — default to
+    // literal calendar "Today" (midnight in the configured timezone → now), computed
+    // directly rather than depending on the SDK having already populated its own
+    // preset list, so this is correct even before that list exists. Still highlight a
+    // matching "Today" preset button if the SDK's list happens to already have one.
+    const todayPresetId = tc?.allDurations?.find((d) => d.id?.toLowerCase() === 'today')?.id;
+    setLocalPreset(todayPresetId);
+    const { startTime, endTime } = computeDurationWindow(
+      { navigation: 'Current', x: 0, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
+      Date.now(),
+      tc?.timezone,
+    );
+    setLocalRange({ start: new Date(startTime), end: new Date(endTime) });
+  }, [config]);
+
+  // Active chart — one of several independent chart panels, switchable via the
+  // title-slot dropdown. Declared before any early return (Rules of Hooks).
+  const charts = config?.charts ?? [];
+  const [activeChartId, setActiveChartId] = useState<string | undefined>(charts[0]?.id);
+  useEffect(() => {
+    if (!charts.some((c) => c.id === activeChartId)) setActiveChartId(charts[0]?.id);
+  }, [config]);
+
+  // Chart Control — view-time-only toggles, not persisted config. Highcharts instance
+  // ref feeds exportChart from the Download Type menu.
+  const [showLegend, setShowLegend] = useState(true);
+  const [showDataLabels, setShowDataLabels] = useState(false);
+  const [zoomable, setZoomable] = useState(false);
+  const chartInstanceRef = useRef<unknown>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
   if (!config) return <NoConfigScreen style={SAFE_STYLING} />;
   if (!isConfigured(config)) return <NoConfigScreen style={style} />;
 
-  const xSeries = getSeriesData('xField', data);
-  const ySeries = getSeriesData('yField', data);
+  const activeChart = charts.find((c) => c.id === activeChartId) ?? charts[0];
+  const activeChartIndex = charts.findIndex((c) => c.id === activeChart?.id);
 
-  if (!xSeries || !ySeries || xSeries.slots.length === 0 || ySeries.slots.length === 0) {
-    return <NoDataScreen style={style} />;
+  interface ScatterSeriesEntry {
+    source: ScatterDataSource;
+    points: Array<[number, number]>;
   }
 
-  const pointCount = Math.min(xSeries.slots.length, ySeries.slots.length);
-  const points: Array<[number, number]> = [];
-  for (let i = 0; i < pointCount; i++) {
-    const xv = xSeries.slots[i].value;
-    const yv = ySeries.slots[i].value;
-    if (xv !== null && yv !== null) points.push([xv, yv]);
-  }
+  const seriesEntries: ScatterSeriesEntry[] = (activeChart?.dataSources ?? [])
+    .map((source, j) => {
+      if (!source.xField || !source.yField) return null;
+      const xSeries = getSeriesData(`charts[${activeChartIndex}].dataSources[${j}].xField`, data);
+      const ySeries = getSeriesData(`charts[${activeChartIndex}].dataSources[${j}].yField`, data);
+      if (!xSeries || !ySeries || xSeries.slots.length === 0 || ySeries.slots.length === 0) return null;
+      const pointCount = Math.min(xSeries.slots.length, ySeries.slots.length);
+      const points: Array<[number, number]> = [];
+      for (let i = 0; i < pointCount; i++) {
+        const xv = xSeries.slots[i].value;
+        const yv = ySeries.slots[i].value;
+        if (xv !== null && yv !== null) points.push([xv, yv]);
+      }
+      return points.length > 0 ? { source, points } : null;
+    })
+    .filter((e): e is ScatterSeriesEntry => e !== null);
+
+  const hasData = seriesEntries.length > 0;
 
   function handleRangeChange(range: { start: Date; end: Date } | null) {
     if (!range) return;
@@ -207,19 +301,87 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
 
   const advanced = style.advancedEnabled;
 
+  function handleFullScreen() {
+    containerRef.current?.requestFullscreen?.();
+  }
+
+  function handleDownload(format: ChartExportFormat) {
+    exportChart({ instance: chartInstanceRef.current, engine: 'highcharts', format, fileName: activeChart?.title || 'chart' });
+  }
+
   return (
-    <div className="widget-template" style={styleToCssVars(style)}>
+    <div className="widget-template" style={styleToCssVars(style)} ref={containerRef}>
       <LineChart
         bare={!style.card.wrapInCard}
-        title={style.hideElements.title ? undefined : 'Scatter'}
+        title={
+          style.hideElements.title
+            ? undefined
+            : charts.length > 1
+              ? <ChartTitleSwitcher charts={charts} activeId={activeChart?.id} onSelect={setActiveChartId} />
+              : (activeChart?.title || 'Scatter')
+        }
         duration={durationSlot}
-        showSettings={style.hideElements.settingsIcon !== true}
-        showInfo={false}
-        showMore={style.hideElements.exportIcon !== true}
+        status={hasData ? undefined : 'not-configured'}
+        onChartReady={(instance) => { chartInstanceRef.current = instance; }}
+        actions={
+          <div className="scatter-chart-actions">
+            {activeChart?.description && (
+              <Tooltip heading={activeChart.title || undefined} bodyText={activeChart.description}>
+                <IconButton icon={<Info size={16} />} size="Small" accessibilityLabel="Description" />
+              </Tooltip>
+            )}
+            {style.hideElements.settingsIcon !== true && (
+              <Popover
+                placement="Bottom"
+                className="scatter-chart-control-popover"
+                trigger={<IconButton icon={<Settings size={16} />} size="Small" accessibilityLabel="Chart settings" />}
+              >
+                <DropdownMenu>
+                  <ActionListItem contentType="SectionHeading" title="Chart Control" />
+                  <ActionListItem
+                    title="Legends"
+                    selectionType="Multiple"
+                    isSelected={showLegend}
+                    onClick={() => setShowLegend((v) => !v)}
+                  />
+                  <ActionListItem
+                    title="Data Labels"
+                    selectionType="Multiple"
+                    isSelected={showDataLabels}
+                    onClick={() => setShowDataLabels((v) => !v)}
+                  />
+                  <ActionListItem
+                    title="Zoom"
+                    selectionType="Multiple"
+                    isSelected={zoomable}
+                    onClick={() => setZoomable((v) => !v)}
+                  />
+                </DropdownMenu>
+              </Popover>
+            )}
+            {style.hideElements.exportIcon !== true && (
+              <Popover
+                placement="Bottom"
+                className="scatter-chart-export-popover"
+                trigger={<IconButton icon={<Menu size={16} />} size="Small" accessibilityLabel="More options" />}
+              >
+                <DropdownMenu>
+                  <ActionListItem title="View in full screen" onClick={handleFullScreen} />
+                  <ActionListItem contentType="Separator" />
+                  <ActionListItem contentType="SectionHeading" title="Download Type" />
+                  {(['SVG', 'PNG', 'JPEG', 'CSV', 'XLSX'] as const).map((format) => (
+                    <ActionListItem key={format} title={format} onClick={() => handleDownload(format)} />
+                  ))}
+                </DropdownMenu>
+              </Popover>
+            )}
+          </div>
+        }
         categories={[]}
         series={[]}
-        showLegend
-        colors={[advanced ? style.xAxis.dataPointColor : SAFE_STYLING.xAxis.dataPointColor]}
+        showLegend={showLegend}
+        showDataLabels={showDataLabels}
+        colors={seriesEntries.map(({ source }) => source.color)}
         filters={
           mode === 'local' ? (
             <DatePicker
@@ -234,37 +396,35 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
           ) : undefined
         }
         highchartsOptions={{
-          chart: { type: 'scatter' },
+          chart: { type: 'scatter', zooming: { type: zoomable ? 'xy' : undefined } },
           xAxis: {
             type: 'linear',
-            title: { text: 'X', style: advanced ? { color: style.xAxis.textColor } : undefined },
+            title: { text: activeChart?.xAxisLabel || 'X', style: advanced ? { color: style.xAxis.textColor } : undefined },
             labels: { style: advanced ? { color: style.xAxis.textColor } : undefined },
             lineColor: advanced ? style.xAxis.lineColor : undefined,
             gridLineColor: advanced ? style.misc.gridLineColor : undefined,
           },
           yAxis: {
-            title: { text: 'Y', style: advanced ? { color: style.yAxis.textColor } : undefined },
+            title: { text: activeChart?.yAxisLabel || 'Y', style: advanced ? { color: style.yAxis.textColor } : undefined },
             labels: { style: advanced ? { color: style.yAxis.textColor } : undefined },
             gridLineColor: advanced ? style.misc.gridLineColor : undefined,
           },
           legend: { itemStyle: advanced ? { color: style.misc.legendTextColor } : undefined },
-          series: [
-            {
-              type: 'scatter',
-              name: 'X vs Y',
-              data: points,
-              color: advanced ? style.xAxis.dataPointColor : undefined,
-              dataLabels: advanced
-                ? {
-                    style: {
-                      fontSize: `${style.pointLabel.fontSize}px`,
-                      color: style.pointLabel.fontColor,
-                      fontWeight: String(fontWeightToCss(style.pointLabel.fontWeight)),
-                    },
-                  }
-                : undefined,
-            },
-          ],
+          series: seriesEntries.map(({ source, points }) => ({
+            type: 'scatter' as const,
+            name: source.label || 'Series',
+            data: points,
+            color: source.color,
+            dataLabels: advanced
+              ? {
+                  style: {
+                    fontSize: `${style.pointLabel.fontSize}px`,
+                    color: style.pointLabel.fontColor,
+                    fontWeight: String(fontWeightToCss(style.pointLabel.fontWeight)),
+                  },
+                }
+              : undefined,
+          })),
         }}
       />
     </div>

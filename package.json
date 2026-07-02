@@ -6,6 +6,7 @@
   "scripts": {
     "start": "webpack serve --mode development",
     "build:bundle": "webpack --mode production",
+    "typecheck": "tsc --noEmit",
     "deploy:review": "node scripts/pre-deploy-review.js",
     "deploy": "claude /deploy-review"
   },

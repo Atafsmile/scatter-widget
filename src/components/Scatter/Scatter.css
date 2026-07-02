@@ -68,3 +68,29 @@
   color: var(--text-default-tertiary, #aaa);
   margin: 0;
 }
+
+/* ---- Chart switcher — clickable title + DropdownMenu, shown when there are 2+ charts ---- */
+.scatter-chart-switcher {
+  position: relative;
+}
+
+.scatter-chart-switcher__trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-01, 2px);
+  cursor: pointer;
+  color: var(--scatter-title-color, var(--text-default-primary, #192839));
+}
+
+/* ---- Chart action icons — Info first, then Settings, then Export (last) ---- */
+.scatter-chart-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-03, 8px);
+}
+
+/* ---- Settings (Chart Control) / Export dropdown panels ---- */
+.scatter-chart-control-popover .fds-dropdown-menu,
+.scatter-chart-export-popover .fds-dropdown-menu {
+  min-width: 200px;
+}
