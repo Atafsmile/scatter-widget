@@ -7,7 +7,7 @@ import './highcharts-setup';
 import 'highcharts/highcharts-more';
 import 'highcharts/modules/exporting';
 import 'highcharts/modules/export-data';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { DatePicker } from '@faclon-labs/design-sdk/DatePicker';
 import { LineChart } from '@faclon-labs/design-sdk/LineChart';
 import { exportChart, type ChartExportFormat } from '@faclon-labs/design-sdk/Chart';
@@ -16,7 +16,7 @@ import { Popover } from '@faclon-labs/design-sdk/Popover';
 import { IconButton } from '@faclon-labs/design-sdk/IconButton';
 import { DropdownMenu, ActionListItem } from '@faclon-labs/design-sdk/DropdownMenu';
 import { ChevronDown, Info, Settings, Menu } from 'lucide-react';
-import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSource, ScatterOverlayPoint, ScatterStyling, StylingFontWeight, TimeTabUIConfig, SeriesPayload } from '../../iosense-sdk/types';
+import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSource, ScatterOverlayPoint, ScatterStyling, StylingFontWeight, TimeTabUIConfig, SeriesPayload, GTPPreset } from '../../iosense-sdk/types';
 import { getSeriesData } from '../../iosense-sdk/mini-engine';
 import { timeConfigMode, computeDurationWindow } from '../../iosense-sdk/time-window';
 import { WidgetEmptyState } from '../../iosense-sdk/WidgetEmptyState';
@@ -32,6 +32,24 @@ interface ScatterProps {
   data: DataEntry[];
   onEvent: (event: WidgetEvent) => void;
 }
+
+// The SDK's TimeTabConfiguration only materializes its preset list once it MOUNTS
+// (i.e. the user opens the Time tab). A widget added and configured without ever
+// visiting Time has an empty tc.allDurations — the DatePicker then has no presets to
+// list ("No results found") and nothing to highlight, so it collapses to "Custom".
+// These mirror the SDK's built-in calendar presets so a fresh widget shows a usable
+// preset list and defaults its selection to "Today". Superseded the instant the user
+// touches the Time tab, at which point tc.allDurations arrives from the SDK.
+const DEFAULT_LOCAL_DURATIONS: GTPPreset[] = [
+  { id: 'today', label: 'Today', calendarType: 'today', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
+  { id: 'yesterday', label: 'Yesterday', calendarType: 'yesterday', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'day', xEvent: 'Start', y: 1, yPeriod: 'day', yEvent: 'End' },
+  { id: 'current_week', label: 'Current Week', calendarType: 'current_week', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'week', xEvent: 'Start', y: 0, yPeriod: 'week', yEvent: 'Now' },
+  { id: 'previous_week', label: 'Previous Week', calendarType: 'previous_week', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'week', xEvent: 'Start', y: 1, yPeriod: 'week', yEvent: 'End' },
+  { id: 'last_7_days', label: 'Last 7 Days', isBuiltIn: true, navigation: 'Previous', x: 7, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
+  { id: 'current_month', label: 'Current Month', calendarType: 'current_month', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
+  { id: 'previous_month', label: 'Previous Month', calendarType: 'previous_month', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'month', xEvent: 'Start', y: 1, yPeriod: 'month', yEvent: 'End' },
+  { id: 'last_30_days', label: 'Last 30 Days', isBuiltIn: true, navigation: 'Previous', x: 30, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
+];
 
 const SAFE_STYLING: ScatterStyling = {
   card: { wrapInCard: true, backgroundColor: '#FFFFFF', borderColor: '#EEEEEE', borderWidth: 1, borderRadius: 8 },
@@ -244,6 +262,12 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   const tc = config?.timeConfig;
   const mode = timeConfigMode(tc);
 
+  // Fall back to the built-in preset list when the Time tab was never opened (empty
+  // allDurations) so the DatePicker has presets to show and a "Today" to select —
+  // see DEFAULT_LOCAL_DURATIONS. Once the SDK provides its own list, use that.
+  const effectiveDurations =
+    tc?.allDurations && tc.allDurations.length > 0 ? tc.allDurations : DEFAULT_LOCAL_DURATIONS;
+
   // DatePicker state lives at widget level (not inside a keyed/remounted child) so
   // selection doesn't snap back to default on data-driven remount.
   const [localRange, setLocalRange] = useState<{ start: Date; end: Date } | null>(null);
@@ -288,20 +312,28 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
     // widget isn't handed the globalTimepickers list) — nothing to announce here.
     if (mode !== 'local') return;
 
-    const preset = tc?.allDurations?.find((d) => d.id === tc?.defaultDurationId);
+    const preset = effectiveDurations.find((d) => d.id === tc?.defaultDurationId);
     if (preset) {
       setLocalPreset(preset.id);
       const { startTime, endTime } = computeDurationWindow(preset, Date.now(), tc?.timezone, tc?.cycleTime);
       applyRange({ start: new Date(startTime), end: new Date(endTime) });
       return;
     }
-    // No duration configured yet (fresh chart, Time tab never touched) — default to
-    // literal calendar "Today" (midnight in the configured timezone → now), computed
-    // directly rather than depending on the SDK having already populated its own
-    // preset list, so this is correct even before that list exists. Still highlight a
-    // matching "Today" preset button if the SDK's list happens to already have one.
-    const todayPresetId = tc?.allDurations?.find((d) => d.id?.toLowerCase() === 'today')?.id;
-    setLocalPreset(todayPresetId);
+    // No default duration configured yet (fresh chart, Time tab never touched) —
+    // default to "Today". Prefer the real preset entry from effectiveDurations (so the
+    // DatePicker highlights the "Today" button AND the window matches it exactly),
+    // which — thanks to DEFAULT_LOCAL_DURATIONS — always exists even before the SDK
+    // has populated its own list. The literal-window branch is a defensive last resort.
+    const todayPreset =
+      effectiveDurations.find((d) => d.calendarType === 'today') ??
+      effectiveDurations.find((d) => d.id?.toLowerCase() === 'today');
+    if (todayPreset) {
+      setLocalPreset(todayPreset.id);
+      const { startTime, endTime } = computeDurationWindow(todayPreset, Date.now(), tc?.timezone, tc?.cycleTime);
+      applyRange({ start: new Date(startTime), end: new Date(endTime) });
+      return;
+    }
+    setLocalPreset(undefined);
     const { startTime, endTime } = computeDurationWindow(
       { navigation: 'Current', x: 0, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
       Date.now(),
@@ -331,7 +363,27 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   const [zonePoints, setZonePoints] = useState(true);
   const [zoneLegends, setZoneLegends] = useState(true);
   const chartInstanceRef = useRef<unknown>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // Highcharts sizes itself to the container's measured dimensions at render time and
+  // only auto-reflows on WINDOW resize — it never sees the dashboard grid resizing the
+  // widget's own container (which is why a full page refresh, re-measuring at the final
+  // size, "fixes" the squashed first render). Observe the container and reflow on any
+  // size change. A callback ref (not a useEffect) so it re-targets correctly across the
+  // no-source → chart branch swap without running afoul of the early returns' hook order.
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const attachContainer = useCallback((el: HTMLDivElement | null) => {
+    containerRef.current = el;
+    resizeObserverRef.current?.disconnect();
+    resizeObserverRef.current = null;
+    if (el && typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => {
+        (chartInstanceRef.current as { reflow?: () => void } | null)?.reflow?.();
+      });
+      ro.observe(el);
+      resizeObserverRef.current = ro;
+    }
+  }, []);
+  useEffect(() => () => resizeObserverRef.current?.disconnect(), []);
   // Last window emitted via TIME_CHANGE — a preset click applies the window in
   // handlePresetSelect, and the SDK DatePicker may fire onRangeChange right after
   // in the same tick (state not yet flushed), so dedupe through a ref, not state.
@@ -464,7 +516,7 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   function handlePresetSelect(value: string) {
     presetSelectedAtRef.current = performance.now();
     setLocalPreset(value);
-    const preset = tc?.allDurations?.find((d) => d.id === value);
+    const preset = effectiveDurations.find((d) => d.id === value);
     if (!preset) return;
     const { startTime, endTime } = computeDurationWindow(preset, Date.now(), tc?.timezone, tc?.cycleTime);
     applyRange({ start: new Date(startTime), end: new Date(endTime) });
@@ -482,7 +534,7 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   // (that copy is reserved for a configured source that resolved to nothing).
   if (!hasConfiguredSource) {
     return (
-      <div className="widget-template scatter-no-source" style={styleToCssVars(style)} ref={containerRef}>
+      <div className="widget-template scatter-no-source" style={styleToCssVars(style)} ref={attachContainer}>
         {!style.hideElements.title && (
           <div className="scatter-no-source__header">
             {charts.length > 1 ? (
@@ -499,7 +551,7 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
     );
   }
 
-  const presets = (tc?.allDurations ?? []).map((d) => ({
+  const presets = effectiveDurations.map((d) => ({
     label: d.label ?? `Last ${d.x ?? 1} ${d.xPeriod}`,
     value: d.id,
   }));
@@ -515,7 +567,7 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   }
 
   return (
-    <div className="widget-template" style={styleToCssVars(style)} ref={containerRef}>
+    <div className="widget-template" style={styleToCssVars(style)} ref={attachContainer}>
       <LineChart
         title={
           style.hideElements.title
@@ -529,7 +581,12 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
         // series data hasn't resolved yet — only fall to the "No data found"
         // canvas state when there is nothing at all to draw.
         status={hasData || zoneOverlays.length > 0 || benchmarkOverlays.length > 0 ? undefined : 'not-configured'}
-        onChartReady={(instance) => { chartInstanceRef.current = instance; }}
+        onChartReady={(instance) => {
+          chartInstanceRef.current = instance;
+          // The container may have reached its final grid size before the instance
+          // existed (so the observe-time reflow was a no-op) — reflow once now.
+          (instance as { reflow?: () => void } | null)?.reflow?.();
+        }}
         actions={
           <div className="scatter-chart-actions">
             {activeChart?.description && (
