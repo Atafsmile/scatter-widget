@@ -40,12 +40,20 @@ export default (env, argv) => {
           // global Highcharts object the host page provides, so externalize the whole
           // `highcharts` namespace rather than just the bare specifier.
           ({ request }, callback) => {
-            // highcharts-more must be bundled, not externalized: the host page
-            // loads core highcharts.min.js only, so the 'polygon' series type
-            // (Scatter Zones) would never be registered (Highcharts error #17).
-            // It reads the core instance off window._Highcharts — bridged by
-            // src/components/Scatter/highcharts-more-setup.ts.
-            if (request === 'highcharts/highcharts-more') return callback();
+            // These must be bundled, not externalized: the host page loads core
+            // highcharts.min.js only, so highcharts-more's 'polygon' series type
+            // (Scatter Zones, Highcharts error #17) and the exporting/export-data
+            // compositions (Download Type menu — without them chart.exporting is
+            // undefined and exportChart silently no-ops) would never register.
+            // They read the core instance off window._Highcharts — bridged by
+            // src/components/Scatter/highcharts-setup.ts, which must evaluate
+            // before any of them.
+            const bundled = [
+              'highcharts/highcharts-more',
+              'highcharts/modules/exporting',
+              'highcharts/modules/export-data',
+            ];
+            if (bundled.includes(request)) return callback();
             if (request === 'highcharts' || request.startsWith('highcharts/')) {
               return callback(null, 'Highcharts');
             }

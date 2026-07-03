@@ -1,3 +1,12 @@
+// Side-effect imports — the setup shim bridges window._Highcharts to the host's
+// Highcharts and MUST evaluate before any design-sdk import (design-sdk's Chart
+// pulls in highcharts/modules/exporting + export-data, bundled in prod).
+// highcharts-more registers the 'polygon' series type (Scatter Zones); the
+// exporting modules power the Download Type menu (SVG/PNG/JPEG/CSV/XLSX).
+import './highcharts-setup';
+import 'highcharts/highcharts-more';
+import 'highcharts/modules/exporting';
+import 'highcharts/modules/export-data';
 import { useState, useEffect, useRef } from 'react';
 import { DatePicker } from '@faclon-labs/design-sdk/DatePicker';
 import { LineChart } from '@faclon-labs/design-sdk/LineChart';
@@ -7,11 +16,6 @@ import { Popover } from '@faclon-labs/design-sdk/Popover';
 import { IconButton } from '@faclon-labs/design-sdk/IconButton';
 import { DropdownMenu, ActionListItem } from '@faclon-labs/design-sdk/DropdownMenu';
 import { ChevronDown, Info, Settings, Menu } from 'lucide-react';
-// Side-effect imports — the setup shim bridges window._Highcharts to the host's
-// Highcharts, then highcharts-more registers the 'polygon' series type (Scatter
-// Zones) on that instance. Order matters; setup must evaluate first.
-import './highcharts-more-setup';
-import 'highcharts/highcharts-more';
 import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSource, ScatterOverlayPoint, ScatterStyling, StylingFontWeight, TimeTabUIConfig, SeriesPayload } from '../../iosense-sdk/types';
 import { getSeriesData } from '../../iosense-sdk/mini-engine';
 import { timeConfigMode, computeDurationWindow } from '../../iosense-sdk/time-window';
@@ -185,18 +189,27 @@ function ChartTitleSwitcher({
   );
 }
 
-function futureMaxMs(tc: TimeTabUIConfig | undefined, now: number): number | null {
-  const raw = tc?.futureDaysAllowed;
-  if (raw === undefined || raw === null || raw.trim() === '') return null;
-  const days = Number(raw);
-  return Number.isFinite(days) ? now + days * 86_400_000 : null;
+// "Future Days Allowed" (Time tab) — the picker may reach N calendar days ahead,
+// through the END of the Nth day. Day boundaries follow the configured timezone +
+// cycle-time anchor, same as every preset window (NOT now + N×24h, which cut the
+// allowance mid-day). Unset/blank/invalid = 0: future dates are blocked by
+// default, not allowed by default.
+function futureMaxMs(tc: TimeTabUIConfig | undefined, now: number): number {
+  const days = Number(tc?.futureDaysAllowed);
+  const n = Number.isFinite(days) && days > 0 ? Math.floor(days) : 0;
+  const { endTime } = computeDurationWindow(
+    { navigation: 'Next', x: 0, xPeriod: 'day', xEvent: 'Start', y: n, yPeriod: 'day', yEvent: 'End' },
+    now,
+    tc?.timezone,
+    tc?.cycleTime,
+  );
+  return endTime;
 }
 
 function clampToFutureLimit(
   range: { start: Date; end: Date },
-  maxMs: number | null,
+  maxMs: number,
 ): { start: Date; end: Date } {
-  if (maxMs === null) return range;
   return {
     start: new Date(Math.min(range.start.getTime(), maxMs)),
     end: new Date(Math.min(range.end.getTime(), maxMs)),
@@ -251,12 +264,30 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   // and the emit would push a meaningless "today" window.
   const hasConfig = config !== undefined;
   useEffect(() => {
-    if (mode !== 'local' || !hasConfig) return;
+    if (!hasConfig) return;
     // The host drops its TIME_CHANGE override on a Time-tab change, so the last
     // emitted window no longer reflects what the chart shows — clear the dedupe
     // ref or re-clicking the same boundary-anchored preset (e.g. "Yesterday")
     // would be swallowed as a duplicate and never refetch.
     lastWindowRef.current = null;
+
+    // Fixed mode: the window is PINNED in the envelope (tc.startTime/endTime) at
+    // save time by the configurator's adoptSdkTimeConfig — a fixed pair of absolute
+    // boundaries, never a live "now" window. Announce it here so the host refetches
+    // with the fixed boundaries. Without this the host keeps whatever window was
+    // last emitted in the PRIOR mode (a live "…→ now" window), which is exactly the
+    // "last selected time before switching to fixed" the user sees.
+    if (mode === 'fixed') {
+      if (tc?.startTime != null && tc?.endTime != null) {
+        applyRange({ start: new Date(tc.startTime), end: new Date(tc.endTime) });
+      }
+      return;
+    }
+
+    // Global mode is resolved host-side from the linked dashboard timepicker (the
+    // widget isn't handed the globalTimepickers list) — nothing to announce here.
+    if (mode !== 'local') return;
+
     const preset = tc?.allDurations?.find((d) => d.id === tc?.defaultDurationId);
     if (preset) {
       setLocalPreset(preset.id);
@@ -305,6 +336,9 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   // handlePresetSelect, and the SDK DatePicker may fire onRangeChange right after
   // in the same tick (state not yet flushed), so dedupe through a ref, not state.
   const lastWindowRef = useRef<{ start: number; end: number } | null>(null);
+  // When the last preset click happened — its onRangeChange echo must be swallowed
+  // entirely (see handleRangeChange); the exact-ms dedupe above can't catch it.
+  const presetSelectedAtRef = useRef(0);
 
   if (!config) return <NoConfigScreen style={SAFE_STYLING} />;
   if (!isConfigured(config)) return <NoConfigScreen style={style} />;
@@ -413,8 +447,14 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   }
 
   function handleRangeChange(range: { start: Date; end: Date } | null) {
-    // Never clear the preset here — the SDK DatePicker fires onRangeChange right
-    // after onPresetSelect for its built-in preset ids; clearing would reset to "Custom".
+    // The SDK DatePicker fires onRangeChange right after onPresetSelect for preset
+    // ids it recognizes, with ITS OWN idea of the window (browser clock/timezone) —
+    // off by milliseconds, or hours when the widget timezone differs, from the
+    // computeDurationWindow result already applied, so applyRange's exact-ms dedupe
+    // misses it and a duplicate TIME_CHANGE (= duplicate resolveAndCompute) goes
+    // out. The preset's window is authoritative — swallow anything arriving on its
+    // heels. Never clear the preset here either; that would reset it to "Custom".
+    if (performance.now() - presetSelectedAtRef.current < 500) return;
     if (range) applyRange(range);
   }
 
@@ -422,6 +462,7 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   // knows nothing about), so it cannot compute the window itself and will not
   // follow up with an onRangeChange — resolve the duration expression here.
   function handlePresetSelect(value: string) {
+    presetSelectedAtRef.current = performance.now();
     setLocalPreset(value);
     const preset = tc?.allDurations?.find((d) => d.id === value);
     if (!preset) return;

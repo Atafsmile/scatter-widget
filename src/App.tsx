@@ -4,6 +4,7 @@ import { ScatterConfiguration } from './components/ScatterConfiguration/ScatterC
 import { ScatterEnvelope, DataEntry, WidgetEvent } from './iosense-sdk/types';
 import { validateSSOToken } from './iosense-sdk/api';
 import { resolve } from './iosense-sdk/mini-engine';
+import { timeConfigMode } from './iosense-sdk/time-window';
 import { WidgetEmptyState } from './iosense-sdk/WidgetEmptyState';
 import { GLOBAL_TIMEPICKER_FALLBACK } from './iosense-sdk/global-timepickers';
 import { Button } from '@faclon-labs/design-sdk/Button';
@@ -49,6 +50,13 @@ export default function App() {
 
   useEffect(() => {
     if (!envelope || !auth) return;
+    // Local mode: the widget announces its window via TIME_CHANGE on mount and
+    // after every Time-tab change (handleEnvelopeChange clears the override) —
+    // resolving here with the envelope-derived window too hit resolveAndCompute
+    // TWICE per load with near-identical windows. Wait for the widget's event.
+    // Exception: in the fetch-error state the widget is unmounted and can never
+    // emit — fetch directly so Retry / a config change can still recover.
+    if (timeConfigMode(envelope.timeConfig) === 'local' && !timeOverride && !fetchError) return;
     const fetchKey = JSON.stringify({
       bindings: envelope.dynamicBindingPathList,
       timeConfig: envelope.timeConfig ?? null,
@@ -67,7 +75,7 @@ export default function App() {
       setData(resolved);
       setFetchError(error);
     });
-  }, [envelope, auth, timeOverride, retryTick]);
+  }, [envelope, auth, timeOverride, retryTick, fetchError]);
 
   // A widget-level DatePicker override must not outlive the Time tab config it was
   // picked under — when the configurator emits a different timeConfig, drop the
