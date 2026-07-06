@@ -14,12 +14,11 @@ import { Modal, ModalHeader, ModalBody, ModalFooter, ModalLeadingItem } from '@f
 import { Button } from '@faclon-labs/design-sdk/Button';
 import { Radio, RadioGroup } from '@faclon-labs/design-sdk/Radio';
 import { UploadCta } from '@faclon-labs/design-sdk/UploadCta';
-import { CounterInput } from '@faclon-labs/design-sdk/CounterInput';
 import { IconButton } from '@faclon-labs/design-sdk/IconButton';
 import { ListCard } from '@faclon-labs/design-sdk/ListCard';
 import { Badge } from '@faclon-labs/design-sdk/Badge';
 import { Tooltip } from '@faclon-labs/design-sdk/Tooltip';
-import { Plus, Trash2, ChevronDown, ChevronUp, Pencil, ArrowLeft, Download, X } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronUp, Pencil, ArrowLeft, Download, X, FileSpreadsheet, RotateCw, AlertCircle } from 'lucide-react';
 import type { TimeTabUIConfig as SdkTimeTabUIConfig } from '@faclon-labs/design-sdk';
 import {
   BindingEntry,
@@ -262,12 +261,47 @@ function makeEmptyDataSource(): ScatterDataSource {
     id: makeDataSourceId(),
     label: '',
     xField: '',
-    xPrecision: 2,
+    xPrecision: 0,
     yField: '',
-    yPrecision: 2,
+    yPrecision: 0,
     color: '#3B82F6',
     frequency: 60,
   };
+}
+
+// Data precision is capped at 2 and defaults to 0 (testing feedback #5).
+const MAX_PRECISION = 2;
+
+// Whole-number field using the browser's native spin buttons instead of −/+ icon
+// buttons (testing feedback #4). Values clamp to [min, max] on every commit.
+function NumberField({
+  label,
+  value,
+  min = 0,
+  max,
+  suffix,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+  suffix?: string;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <TextInput
+      label={label}
+      type="number"
+      suffix={suffix}
+      value={String(value)}
+      onChange={({ value: v }) => {
+        const n = Math.round(Number(v));
+        if (!Number.isFinite(n)) { onChange(min); return; }
+        onChange(Math.min(max ?? Infinity, Math.max(min, n)));
+      }}
+    />
+  );
 }
 
 let chartSeq = 0;
@@ -321,20 +355,12 @@ const OVERLAY_COPY: Record<OverlayKind, {
   },
 };
 
-// Stored value is the Highcharts dashStyle name; the dropdown shows the spaced
-// English label. Order mirrors the Highcharts docs.
+// Stored value is the Highcharts dashStyle name. Per testing feedback only Solid
+// and Dash are offered (default Solid); older envelopes with other values still
+// render — the widget passes the stored name through untouched.
 const DASH_STYLES: Array<{ value: ScatterDashStyle; label: string }> = [
   { value: 'Solid', label: 'Solid' },
-  { value: 'ShortDash', label: 'Short Dash' },
-  { value: 'ShortDot', label: 'Short Dot' },
-  { value: 'ShortDashDot', label: 'Short Dash Dot' },
-  { value: 'ShortDashDotDot', label: 'Short Dash Dot Dot' },
-  { value: 'Dot', label: 'Dot' },
   { value: 'Dash', label: 'Dash' },
-  { value: 'LongDash', label: 'Long Dash' },
-  { value: 'DashDot', label: 'Dash Dot' },
-  { value: 'LongDashDot', label: 'Long Dash Dot' },
-  { value: 'LongDashDotDot', label: 'Long Dash Dot Dot' },
 ];
 
 function DashStyleSelect({
@@ -377,6 +403,8 @@ function makeOverlayId(kind: OverlayKind): string {
 }
 
 // Points are edited as strings (numeric TextInputs) and converted on save.
+// The LAST row is always the empty "draft" row carrying the + button (per the
+// proto — testing feedback #12); committed rows above it carry a red delete.
 interface OverlayDraft {
   id: string;
   label: string;
@@ -386,6 +414,7 @@ interface OverlayDraft {
   pointsMode: ScatterPointsMode;
   rows: Array<{ x: string; y: string }>;
   fileName?: string;
+  fileSize?: string;
 }
 
 function makeEmptyOverlayDraft(kind: OverlayKind): OverlayDraft {
@@ -408,11 +437,17 @@ function overlayToDraft(overlay: ScatterOverlay): OverlayDraft {
     width: String(overlay.lineWidth ?? 1),
     dashStyle: overlay.dashStyle ?? 'Solid',
     pointsMode: overlay.pointsMode,
-    rows: overlay.points.length > 0
-      ? overlay.points.map((p) => ({ x: String(p.x), y: String(p.y) }))
-      : [{ x: '', y: '' }],
+    // Saved points + the trailing draft row (also the sole row when empty).
+    rows: [...overlay.points.map((p) => ({ x: String(p.x), y: String(p.y) })), { x: '', y: '' }],
     fileName: overlay.fileName,
+    fileSize: overlay.fileSize,
   };
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
 }
 
 // Sentinel id for a brand-new chart's live WIDGET PREVIEW only — never persisted to
@@ -523,7 +558,7 @@ function SectionHeader({
       onClick={() => onToggle?.()}
     >
       <div className="wt-config__section-header-left">
-        <span className="wt-config__section-title BodySmallSemibold">{title}</span>
+        <span className="wt-config__section-title BodyMediumSemibold">{title}</span>
         {count !== undefined && <Badge size="Small" color="Neutral" label={String(count)} />}
       </div>
       <div className="wt-config__section-header-right">
@@ -590,19 +625,19 @@ function StylingSection({
               value={value.card.borderColor}
               onChange={(borderColor) => update('card', { borderColor })}
             />
-            <CounterInput
+            <NumberField
               label="Border Width"
-              leadingLabel="px"
+              suffix="px"
               min={0}
               value={value.card.borderWidth}
-              onChange={({ value: v }) => update('card', { borderWidth: v ?? 0 })}
+              onChange={(borderWidth) => update('card', { borderWidth })}
             />
-            <CounterInput
+            <NumberField
               label="Border Radius"
-              leadingLabel="px"
+              suffix="px"
               min={0}
               value={value.card.borderRadius}
-              onChange={({ value: v }) => update('card', { borderRadius: v ?? 0 })}
+              onChange={(borderRadius) => update('card', { borderRadius })}
             />
           </>
         )}
@@ -611,20 +646,23 @@ function StylingSection({
       <Divider variant="Muted" />
 
       <div className="wt-config__section wt-config__section--checks">
-        <span className="wt-config__section-title BodySmallSemibold">Hide Widget Elements</span>
+        <span className="wt-config__section-title BodyMediumSemibold">Hide Widget Elements</span>
         <CheckboxGroup>
           <Checkbox
             label="Setting Icon"
+            size="Medium"
             checked={value.hideElements.settingsIcon}
             onChange={(e) => update('hideElements', { settingsIcon: e.target.checked })}
           />
           <Checkbox
             label="Export Icon"
+            size="Medium"
             checked={value.hideElements.exportIcon}
             onChange={(e) => update('hideElements', { exportIcon: e.target.checked })}
           />
           <Checkbox
             label="Chart Title"
+            size="Medium"
             checked={value.hideElements.title}
             onChange={(e) => update('hideElements', { title: e.target.checked })}
           />
@@ -644,13 +682,13 @@ function StylingSection({
           <Divider variant="Muted" />
 
           <div className="wt-config__section">
-            <span className="wt-config__section-title BodySmallSemibold">Chart Title</span>
-            <CounterInput
+            <span className="wt-config__section-title BodyMediumSemibold">Chart Title</span>
+            <NumberField
               label="Font Size"
-              leadingLabel="px"
+              suffix="px"
               min={1}
               value={value.title.fontSize}
-              onChange={({ value: v }) => update('title', { fontSize: v ?? value.title.fontSize })}
+              onChange={(fontSize) => update('title', { fontSize })}
             />
             <ColorInput
               label="Font Color"
@@ -668,13 +706,13 @@ function StylingSection({
           <Divider variant="Muted" />
 
           <div className="wt-config__section">
-            <span className="wt-config__section-title BodySmallSemibold">Point Label</span>
-            <CounterInput
+            <span className="wt-config__section-title BodyMediumSemibold">Point Label</span>
+            <NumberField
               label="Font Size"
-              leadingLabel="px"
+              suffix="px"
               min={1}
               value={value.pointLabel.fontSize}
-              onChange={({ value: v }) => update('pointLabel', { fontSize: v ?? value.pointLabel.fontSize })}
+              onChange={(fontSize) => update('pointLabel', { fontSize })}
             />
             <ColorInput
               label="Font Color"
@@ -692,7 +730,7 @@ function StylingSection({
           <Divider variant="Muted" />
 
           <div className="wt-config__section">
-            <span className="wt-config__section-title BodySmallSemibold">X Axis</span>
+            <span className="wt-config__section-title BodyMediumSemibold">X Axis</span>
             <ColorInput
               label="Axis Text Color"
               placeholder="Select color"
@@ -716,7 +754,7 @@ function StylingSection({
           <Divider variant="Muted" />
 
           <div className="wt-config__section">
-            <span className="wt-config__section-title BodySmallSemibold">Y Axis</span>
+            <span className="wt-config__section-title BodyMediumSemibold">Y Axis</span>
             <ColorInput
               label="Axis Text Color"
               placeholder="Select color"
@@ -734,7 +772,7 @@ function StylingSection({
           <Divider variant="Muted" />
 
           <div className="wt-config__section">
-            <span className="wt-config__section-title BodySmallSemibold">Others</span>
+            <span className="wt-config__section-title BodyMediumSemibold">Others</span>
             <ColorInput
               label="Grid Line Color"
               placeholder="Select color"
@@ -770,6 +808,13 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   const [chartDraft, setChartDraft] = useState<ChartDraft>(
     charts[0] ? chartToDraft(charts[0]) : makeEmptyChartDraft(),
   );
+  // Required-field errors surface inline on the fields after a failed Save —
+  // matches Column Chart v2's field behaviour (testing feedback #2).
+  const [chartFieldErrors, setChartFieldErrors] = useState<{
+    title?: boolean;
+    xAxisLabel?: boolean;
+    yAxisLabel?: boolean;
+  }>({});
 
   // Delete confirmation — shared between chart / data-source / benchmark / zone delete.
   const [deleteTarget, setDeleteTarget] = useState<
@@ -793,6 +838,11 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   const [overlayDraft, setOverlayDraft] = useState<OverlayDraft>(makeEmptyOverlayDraft('benchmark'));
   const [overlayError, setOverlayError] = useState<string | null>(null);
   const [isParsingFile, setIsParsingFile] = useState(false);
+  // Failed parse — rendered as the SDK-style error file card (retry/dismiss),
+  // replacing the dropzone until cleared (testing feedback #10).
+  const [uploadError, setUploadError] = useState<{ fileName: string; message: string } | null>(null);
+  // Index of the Axes row being dragged for reorder (testing feedback #9/#12).
+  const dragRowIndex = useRef<number | null>(null);
 
   // Collapsible Data-tab sections.
   const [isDataSourceOpen, setIsDataSourceOpen] = useState(true);
@@ -908,6 +958,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     e.stopPropagation();
     setEditingChartId(null);
     setChartDraft(makeEmptyChartDraft());
+    setChartFieldErrors({});
     setIsEditingChart(true);
   }
 
@@ -916,6 +967,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     if (!chart) return;
     setEditingChartId(id);
     setChartDraft(chartToDraft(chart));
+    setChartFieldErrors({});
     setIsEditingChart(true);
   }
 
@@ -932,6 +984,14 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   // committed `charts` state, so nothing shows up in the chart list/picker (and
   // Data Source stays correctly locked) until Save is actually clicked.
   function updateChartDraftField(patch: Partial<ChartDraft>) {
+    // Typing into a field clears its own required-error immediately.
+    setChartFieldErrors((prev) => {
+      const next = { ...prev };
+      (Object.keys(patch) as Array<keyof ChartDraft>).forEach((k) => {
+        if (k === 'title' || k === 'xAxisLabel' || k === 'yAxisLabel') delete next[k];
+      });
+      return next;
+    });
     setChartDraft((prev) => {
       const next = { ...prev, ...patch };
       previewChartDraft(next);
@@ -952,12 +1012,22 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     emit({ charts });
     const chart = charts.find((c) => c.id === activeChartId) ?? charts[0];
     setChartDraft(chart ? chartToDraft(chart) : makeEmptyChartDraft());
+    setChartFieldErrors({});
     setIsEditingChart(charts.length === 0);
     setEditingChartId(null);
   }
 
   function saveChartDraft() {
-    if (!chartDraft.title.trim() || !chartDraft.xAxisLabel.trim() || !chartDraft.yAxisLabel.trim()) return;
+    const errors = {
+      title: !chartDraft.title.trim() || undefined,
+      xAxisLabel: !chartDraft.xAxisLabel.trim() || undefined,
+      yAxisLabel: !chartDraft.yAxisLabel.trim() || undefined,
+    };
+    if (errors.title || errors.xAxisLabel || errors.yAxisLabel) {
+      setChartFieldErrors(errors);
+      return;
+    }
+    setChartFieldErrors({});
     let next: ScatterChart[];
     let savedId: string;
     if (editingChartId) {
@@ -1080,12 +1150,14 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     setOverlayModal({ kind, editingId: overlay?.id ?? null });
     setOverlayDraft(overlay ? overlayToDraft(overlay) : makeEmptyOverlayDraft(kind));
     setOverlayError(null);
+    setUploadError(null);
     setIsParsingFile(false);
   }
 
   function closeOverlayModal() {
     setOverlayModal(null);
     setOverlayError(null);
+    setUploadError(null);
     setIsParsingFile(false);
   }
 
@@ -1096,6 +1168,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     }));
   }
 
+  // Commits the trailing draft row by appending a fresh empty one below it.
   function addOverlayRow() {
     setOverlayDraft((d) => ({ ...d, rows: [...d.rows, { x: '', y: '' }] }));
   }
@@ -1107,22 +1180,34 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     }));
   }
 
+  function reorderOverlayRows(from: number, to: number) {
+    setOverlayDraft((d) => {
+      const rows = [...d.rows];
+      const [moved] = rows.splice(from, 1);
+      rows.splice(to, 0, moved);
+      return { ...d, rows };
+    });
+  }
+
   async function handleOverlayFile(files: FileList) {
     const file = files[0];
     if (!file) return;
     setIsParsingFile(true);
     setOverlayError(null);
+    setUploadError(null);
     const result = await parsePointsFile(file);
     setIsParsingFile(false);
     if (!result.ok) {
-      setOverlayError(result.error);
+      setUploadError({ fileName: file.name, message: result.error });
       return;
     }
-    // Success behaviour per spec — parsed data auto-populates the X/Y axes fields.
+    // Success behaviour per spec — parsed data auto-populates the X/Y axes rows
+    // (plus the trailing draft row so more points can be added manually).
     setOverlayDraft((d) => ({
       ...d,
-      rows: result.points.map((p) => ({ x: String(p.x), y: String(p.y) })),
+      rows: [...result.points.map((p) => ({ x: String(p.x), y: String(p.y) })), { x: '', y: '' }],
       fileName: file.name,
+      fileSize: formatFileSize(file.size),
     }));
   }
 
@@ -1158,6 +1243,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
       pointsMode: overlayDraft.pointsMode,
       points: rows.map((r) => ({ x: Number(r.x.trim()), y: Number(r.y.trim()) })),
       fileName: overlayDraft.pointsMode === 'upload' ? overlayDraft.fileName : undefined,
+      fileSize: overlayDraft.pointsMode === 'upload' ? overlayDraft.fileSize : undefined,
     };
     const current = overlaysOf(kind);
     const next = editingId ? current.map((o) => (o.id === editingId ? overlay : o)) : [...current, overlay];
@@ -1207,7 +1293,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     <div className="wt-config" ref={configRef}>
       <div className="wt-config__header">
         <IconButton
-          icon={<ArrowLeft size={20} />}
+          icon={<ArrowLeft size={16} />}
           size="Small"
           style={{ color: 'var(--text-default-primary, #192839)' }}
           onClick={() => props.onBack?.()}
@@ -1276,6 +1362,8 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                   placeholder="Enter chart title"
                   isDisabled={!isEditingChart}
                   value={chartDraft.title}
+                  validationState={chartFieldErrors.title ? 'error' : 'none'}
+                  errorText={chartFieldErrors.title ? 'Chart Title is required' : undefined}
                   onChange={({ value }) => updateChartDraftField({ title: value })}
                 />
               )}
@@ -1293,6 +1381,8 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                 placeholder="Enter X axis label"
                 isDisabled={!isEditingChart}
                 value={chartDraft.xAxisLabel}
+                validationState={chartFieldErrors.xAxisLabel ? 'error' : 'none'}
+                errorText={chartFieldErrors.xAxisLabel ? 'X Axis Label is required' : undefined}
                 onChange={({ value }) => updateChartDraftField({ xAxisLabel: value })}
               />
               <TextInput
@@ -1302,15 +1392,25 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                 placeholder="Enter Y axis label"
                 isDisabled={!isEditingChart}
                 value={chartDraft.yAxisLabel}
+                validationState={chartFieldErrors.yAxisLabel ? 'error' : 'none'}
+                errorText={chartFieldErrors.yAxisLabel ? 'Y Axis Label is required' : undefined}
                 onChange={({ value }) => updateChartDraftField({ yAxisLabel: value })}
               />
 
-              {isEditingChart && (
-                <div className="wt-config__chart-actions">
-                  <Button variant="Gray" label="Cancel" onClick={cancelChartEdit} />
-                  <Button variant="Primary" label="Save" onClick={saveChartDraft} />
-                </div>
-              )}
+              {isEditingChart && (() => {
+                // Adding the very first chart: there is nothing to cancel back to, so
+                // hide Cancel, and only surface Save once the user has started typing
+                // the (required) title. Editing an existing chart keeps both buttons.
+                const isFirstChartAdd = charts.length === 0 && !editingChartId;
+                const showSave = !isFirstChartAdd || chartDraft.title.trim() !== '';
+                if (isFirstChartAdd && !showSave) return null;
+                return (
+                  <div className="wt-config__chart-actions">
+                    {!isFirstChartAdd && <Button variant="Gray" label="Cancel" onClick={cancelChartEdit} />}
+                    {showSave && <Button variant="Primary" label="Save" onClick={saveChartDraft} />}
+                  </div>
+                );
+              })()}
             </div>
 
             <Divider variant="Muted" />
@@ -1327,17 +1427,15 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                 isDisabled={!chartScopedSectionsEnabled}
                 addLabel="Add Data Source"
               />
-              {chartScopedSectionsEnabled && isDataSourceOpen && (
+              {chartScopedSectionsEnabled && isDataSourceOpen && dataSources.length > 0 && (
                 <div className="wt-config__ds-list">
-                  {dataSources.length === 0 && (
-                    <span className="wt-config__ds-empty BodySmallRegular">No data sources yet — click + to add one.</span>
-                  )}
                   {dataSources.map((source, index) => (
                     <ListCard
                       key={source.id}
                       title={source.label || `Data Source ${index + 1}`}
                       leadingItem={<span className="wt-config__ds-swatch" style={{ backgroundColor: source.color }} />}
                       trailingItems={
+                        <span className="wt-config__row-delete">
                         <Tooltip bodyText="Delete">
                           <IconButton
                             icon={<Trash2 size={16} />}
@@ -1347,6 +1445,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                             accessibilityLabel="Delete data source"
                           />
                         </Tooltip>
+                        </span>
                       }
                       onClick={() => openEditSourceModal(source)}
                     />
@@ -1369,17 +1468,15 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                 isDisabled={!overlaySectionsEnabled}
                 addLabel="Add Benchmark"
               />
-              {overlaySectionsEnabled && isBenchmarkingOpen && (
+              {overlaySectionsEnabled && isBenchmarkingOpen && benchmarks.length > 0 && (
                 <div className="wt-config__ds-list">
-                  {benchmarks.length === 0 && (
-                    <span className="wt-config__ds-empty BodySmallRegular">No benchmarks yet — click + to add one.</span>
-                  )}
                   {benchmarks.map((benchmark, index) => (
                     <ListCard
                       key={benchmark.id}
                       title={benchmark.label || `Benchmark ${index + 1}`}
                       leadingItem={<span className="wt-config__ds-swatch" style={{ backgroundColor: benchmark.color }} />}
                       trailingItems={
+                        <span className="wt-config__row-delete">
                         <Tooltip bodyText="Delete">
                           <IconButton
                             icon={<Trash2 size={16} />}
@@ -1389,6 +1486,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                             accessibilityLabel="Delete benchmark"
                           />
                         </Tooltip>
+                        </span>
                       }
                       onClick={() => openOverlayModal('benchmark', benchmark)}
                     />
@@ -1411,17 +1509,15 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                 isDisabled={!overlaySectionsEnabled}
                 addLabel="Add Scatter Zone"
               />
-              {overlaySectionsEnabled && isScatterZoneOpen && (
+              {overlaySectionsEnabled && isScatterZoneOpen && zones.length > 0 && (
                 <div className="wt-config__ds-list">
-                  {zones.length === 0 && (
-                    <span className="wt-config__ds-empty BodySmallRegular">No scatter zones yet — click + to add one.</span>
-                  )}
                   {zones.map((zone, index) => (
                     <ListCard
                       key={zone.id}
                       title={zone.label || `Scatter Zone ${index + 1}`}
                       leadingItem={<span className="wt-config__ds-swatch" style={{ backgroundColor: zone.color }} />}
                       trailingItems={
+                        <span className="wt-config__row-delete">
                         <Tooltip bodyText="Delete">
                           <IconButton
                             icon={<Trash2 size={16} />}
@@ -1431,6 +1527,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                             accessibilityLabel="Delete scatter zone"
                           />
                         </Tooltip>
+                        </span>
                       }
                       onClick={() => openOverlayModal('zone', zone)}
                     />
@@ -1453,7 +1550,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                         : OVERLAY_COPY[deleteTarget.kind].deleteTitle
                     }
                     leadingItem={
-                      <ModalLeadingItem leading="Icon" icon={<Trash2 size={20} />} className="wt-config__delete-icon" />
+                      <ModalLeadingItem leading="Icon" icon={<Trash2 size={16} />} className="wt-config__delete-icon" />
                     }
                     onClose={() => setDeleteTarget(null)}
                   />
@@ -1531,11 +1628,12 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                       }
                       onOpen={() => loadWorkspaces()}
                     />
-                    <CounterInput
+                    <NumberField
                       label="X Axis Data Precision"
                       value={draftSource.xPrecision}
                       min={0}
-                      onChange={({ value }) => setDraftSource((d) => ({ ...d, xPrecision: value ?? 2 }))}
+                      max={MAX_PRECISION}
+                      onChange={(xPrecision) => setDraftSource((d) => ({ ...d, xPrecision }))}
                     />
                     <UNSPathInput
                       label="Y Axis UNS Path"
@@ -1552,11 +1650,12 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                       }
                       onOpen={() => loadWorkspaces()}
                     />
-                    <CounterInput
+                    <NumberField
                       label="Y Axis Data Precision"
                       value={draftSource.yPrecision}
                       min={0}
-                      onChange={({ value }) => setDraftSource((d) => ({ ...d, yPrecision: value ?? 2 }))}
+                      max={MAX_PRECISION}
+                      onChange={(yPrecision) => setDraftSource((d) => ({ ...d, yPrecision }))}
                     />
                     <ColorInput
                       label="Scatter Point Color"
@@ -1663,14 +1762,48 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                             )
                           }
                         />
-                        {overlayDraft.fileName ? (
+                        {uploadError ? (
+                          <div className="wt-config__file-card wt-config__file-card--error">
+                            <span className="wt-config__file-icon wt-config__file-icon--error">
+                              <AlertCircle size={16} />
+                            </span>
+                            <div className="wt-config__file-meta">
+                              <span className="wt-config__ds-file BodySmallSemibold">{uploadError.fileName}</span>
+                              <span className="wt-config__file-error-text BodySmallRegular">{uploadError.message}</span>
+                            </div>
+                            <div className="wt-config__file-actions">
+                              <Tooltip bodyText="Try again">
+                                <IconButton
+                                  icon={<RotateCw size={16} />}
+                                  size="Small"
+                                  onClick={() => setUploadError(null)}
+                                  accessibilityLabel="Try again"
+                                />
+                              </Tooltip>
+                              <IconButton
+                                icon={<X size={16} />}
+                                size="Small"
+                                onClick={() => setUploadError(null)}
+                                accessibilityLabel="Dismiss error"
+                              />
+                            </div>
+                          </div>
+                        ) : overlayDraft.fileName ? (
                           <div className="wt-config__file-card">
-                            <span className="wt-config__ds-file BodySmallRegular">{overlayDraft.fileName}</span>
+                            <span className="wt-config__file-icon">
+                              <FileSpreadsheet size={16} />
+                            </span>
+                            <div className="wt-config__file-meta">
+                              <span className="wt-config__ds-file BodySmallSemibold">{overlayDraft.fileName}</span>
+                              {overlayDraft.fileSize && (
+                                <span className="wt-config__ds-file-hint BodySmallRegular">{overlayDraft.fileSize}</span>
+                              )}
+                            </div>
                             <IconButton
                               icon={<X size={16} />}
                               size="Small"
                               onClick={() =>
-                                setOverlayDraft((d) => ({ ...d, fileName: undefined, rows: [{ x: '', y: '' }] }))
+                                setOverlayDraft((d) => ({ ...d, fileName: undefined, fileSize: undefined, rows: [{ x: '', y: '' }] }))
                               }
                               accessibilityLabel="Remove file"
                             />
@@ -1688,25 +1821,43 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                       </div>
                     )}
 
-                    {/* Axes rows — in upload mode these are the auto-populated values,
-                        shown once a file has parsed (per the spec's success behaviour). */}
-                    {(overlayDraft.pointsMode === 'multiple' || overlayDraft.fileName) && (
-                      <div className="wt-config__axes">
-                        <div className="wt-config__axes-header">
-                          <span className="wt-config__label BodySmallSemibold">
-                            Axes<span className="wt-config__required">*</span>
-                          </span>
-                          <Tooltip bodyText="Add point">
-                            <IconButton
-                              icon={<Plus size={16} />}
-                              size="Small"
-                              onClick={addOverlayRow}
-                              accessibilityLabel="Add point"
-                            />
-                          </Tooltip>
-                        </div>
-                        {overlayDraft.rows.map((row, index) => (
-                          <div className="wt-config__axes-row" key={index}>
+                    {/* Axes rows — always editable, in upload mode too (feedback #9).
+                        The last row is the draft row carrying the + button; committed
+                        rows above it delete via the red trash and reorder by drag. */}
+                    <div className="wt-config__axes">
+                      <div className="wt-config__axes-header">
+                        <span className="wt-config__label BodySmallSemibold">
+                          Axes<span className="wt-config__required">*</span>
+                        </span>
+                      </div>
+                      {overlayDraft.rows.map((row, index) => {
+                        const isLast = index === overlayDraft.rows.length - 1;
+                        return (
+                          <div
+                            className="wt-config__axes-row"
+                            key={index}
+                            draggable={!isLast}
+                            onDragStart={(e) => {
+                              // Never hijack a drag that starts inside an input —
+                              // that's text selection, not row reorder.
+                              if ((e.target as HTMLElement).closest('input')) {
+                                e.preventDefault();
+                                return;
+                              }
+                              dragRowIndex.current = index;
+                            }}
+                            onDragOver={(e) => {
+                              if (dragRowIndex.current !== null && !isLast) e.preventDefault();
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              const from = dragRowIndex.current;
+                              dragRowIndex.current = null;
+                              if (from === null || from === index || isLast) return;
+                              reorderOverlayRows(from, index);
+                            }}
+                            onDragEnd={() => { dragRowIndex.current = null; }}
+                          >
                             <TextInput
                               label=""
                               type="number"
@@ -1723,17 +1874,31 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                               value={row.y}
                               onChange={({ value }) => updateOverlayRow(index, { y: value })}
                             />
-                            <IconButton
-                              icon={<Trash2 size={16} />}
-                              size="Small"
-                              isDisabled={overlayDraft.rows.length === 1}
-                              onClick={() => removeOverlayRow(index)}
-                              accessibilityLabel="Remove point"
-                            />
+                            {isLast ? (
+                              <Tooltip bodyText="Add point">
+                                <IconButton
+                                  icon={<Plus size={16} />}
+                                  size="Small"
+                                  isDisabled={row.x.trim() === '' || row.y.trim() === ''}
+                                  onClick={addOverlayRow}
+                                  accessibilityLabel="Add point"
+                                />
+                              </Tooltip>
+                            ) : (
+                              <Tooltip bodyText="Remove point">
+                                <IconButton
+                                  icon={<Trash2 size={16} />}
+                                  size="Small"
+                                  style={{ color: 'var(--text-negative-default, #d92d20)' }}
+                                  onClick={() => removeOverlayRow(index)}
+                                  accessibilityLabel="Remove point"
+                                />
+                              </Tooltip>
+                            )}
                           </div>
-                        ))}
-                      </div>
-                    )}
+                        );
+                      })}
+                    </div>
 
                     {overlayError && (
                       <span className="wt-config__ds-error BodySmallRegular">{overlayError}</span>

@@ -37,6 +37,20 @@
   gap: var(--spacing-05, 16px);
 }
 
+/* Section dividers run full-bleed BETWEEN the containers instead of sitting inset
+   inside one (feedback #17) — bleed through the body's 16px side padding. */
+.wt-config__body > .fds-divider {
+  width: calc(100% + 2 * var(--spacing-05, 16px));
+  margin-left: calc(-1 * var(--spacing-05, 16px));
+}
+
+/* Native number-input spin buttons stay visible (feedback #4) — they are the
+   sanctioned stepper, replacing the −/+ icon buttons. */
+.wt-config input[type="number"]::-webkit-inner-spin-button,
+.wt-config-ds-modal input[type="number"]::-webkit-inner-spin-button {
+  opacity: 1;
+}
+
 .wt-config__field {
   display: flex;
   align-items: center;
@@ -104,8 +118,16 @@
   gap: var(--spacing-03, 8px);
 }
 
-.wt-config__ds-empty {
-  color: var(--text-default-secondary, #40566d);
+/* Row delete stays hidden until its list card is hovered or focused (feedback #7). */
+.wt-config__row-delete {
+  display: inline-flex;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.wt-config__ds-list > *:hover .wt-config__row-delete,
+.wt-config__ds-list > *:focus-within .wt-config__row-delete {
+  opacity: 1;
 }
 
 .wt-config__ds-error {
@@ -153,13 +175,13 @@
   min-height: 0;
 }
 
-/* Header/footer divider lines are inset from the modal edges (aligned with the
-   20px body padding) instead of running full-bleed. */
+/* Header/footer divider lines run full-bleed edge-to-edge (no left/right gap) so
+   they read as a clean separator under the title / above the footer button. */
 .wt-config-ds-modal .fds-modal-header__root > .fds-divider,
 .wt-config-ds-modal .fds-modal-footer > .fds-divider {
-  width: calc(100% - 40px);
-  margin-left: 20px;
-  margin-right: 20px;
+  width: 100%;
+  margin-left: 0;
+  margin-right: 0;
 }
 
 .wt-config-ds-modal__body {
@@ -210,6 +232,11 @@
   gap: var(--spacing-03, 8px);
 }
 
+/* Committed rows reorder by drag (feedback #9/#12) — signal it outside the inputs. */
+.wt-config__axes-row[draggable="true"] {
+  cursor: grab;
+}
+
 /* Empty-label TextInputs — suppress the label row so X/Y inputs align in one line. */
 .wt-config__axes-row > *:not(:last-child) {
   flex: 1;
@@ -234,15 +261,50 @@
   color: var(--text-default-tertiary, #8a97a6);
 }
 
-/* Uploaded-file card — name + remove control, mirrors the proto's file chip. */
+/* Uploaded-file card — file-type icon + name/size + actions, mirroring the SDK
+   file-upload item states from the proto (feedback #10/#11). */
 .wt-config__file-card {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--spacing-03, 8px);
   padding: var(--spacing-03, 8px) var(--spacing-04, 12px);
   border: var(--fds-border-default, 1px solid #e0e0e0);
   border-radius: var(--global-border-radius-medium, 6px);
+  background: var(--background-default-secondary, #f7f8f9);
+}
+
+.wt-config__file-card--error {
+  border-color: var(--border-error-default, #fda29b);
+  background: var(--background-error-secondary, #fee2e2);
+}
+
+.wt-config__file-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--icon-positive-default, #12b76a);
+}
+
+.wt-config__file-icon--error {
+  color: var(--icon-error-default, #d92d20);
+}
+
+.wt-config__file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.wt-config__file-error-text {
+  color: var(--text-negative-default, #d92d20);
+}
+
+.wt-config__file-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-02, 4px);
+  flex-shrink: 0;
 }
 
 /* Time tab — the SDK root (.fds-ttc) is a height:100% flex column that owns its own

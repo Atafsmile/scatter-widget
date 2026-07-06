@@ -158,6 +158,13 @@
   gap: var(--spacing-03, 8px);
 }
 
+/* Keep every action icon (Info / Settings / Export) at a uniform 16px, regardless
+   of the IconButton size preset's own icon-box sizing. */
+.scatter-chart-actions svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* ---- Title / Settings / Export dropdown panels ----
    The SDK Popover PORTALS its panel to document.body — outside the widget
    subtree, where this (host-scoped) stylesheet cannot reach it. All panel

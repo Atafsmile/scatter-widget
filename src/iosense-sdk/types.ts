@@ -280,6 +280,7 @@ export interface ScatterOverlay {
   pointsMode: ScatterPointsMode;
   points: ScatterOverlayPoint[];
   fileName?: string;       // set when pointsMode === 'upload'
+  fileSize?: string;       // human-readable ("1.3 MB") — display-only, upload mode
   // Benchmark line styling only (zones ignore both). Optional — absent on saves
   // that predate the fields; the widget defaults to 1px / 'Solid'.
   lineWidth?: number;

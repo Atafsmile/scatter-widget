@@ -378,8 +378,20 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
     resizeObserverRef.current?.disconnect();
     resizeObserverRef.current = null;
     if (el && typeof ResizeObserver !== 'undefined') {
+      // Defer the reflow to the next animation frame: a synchronous reflow inside
+      // the observer callback can read a stale/intermediate box (or a transient 0
+      // during a grid relayout), which leaves the chart squashed and its DOM legend
+      // clipped until some later, unrelated resize. Coalesce bursts through a single
+      // pending frame, and skip reflow while the container measures 0.
+      let rafId = 0;
       const ro = new ResizeObserver(() => {
-        (chartInstanceRef.current as { reflow?: () => void } | null)?.reflow?.();
+        if (rafId) return;
+        rafId = window.requestAnimationFrame(() => {
+          rafId = 0;
+          const node = containerRef.current;
+          if (node && (node.clientWidth === 0 || node.clientHeight === 0)) return;
+          (chartInstanceRef.current as { reflow?: () => void } | null)?.reflow?.();
+        });
       });
       ro.observe(el);
       resizeObserverRef.current = ro;
@@ -723,12 +735,12 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
               };
               if (c.xLabel !== undefined) {
                 return (
-                  `${c.xLabel}: <b>${fmt(ctx.x, c.xPrecision ?? 2)}</b><br/>` +
-                  `${c.yLabel ?? 'Y'}: <b>${fmt(ctx.y, c.yPrecision ?? 2)}</b>`
+                  `${c.xLabel}: <b>${fmt(ctx.x, c.xPrecision ?? 0)}</b><br/>` +
+                  `${c.yLabel ?? 'Y'}: <b>${fmt(ctx.y, c.yPrecision ?? 0)}</b>`
                 );
               }
               // Benchmarks and any other non-scatter series.
-              return `${ctx.series?.name ?? ''}: <b>${fmt(ctx.y, 2)}</b>`;
+              return `${ctx.series?.name ?? ''}: <b>${fmt(ctx.y, 0)}</b>`;
             },
           },
           // NEVER pass explicit `undefined` style objects here — the SDK deep-merges
@@ -770,7 +782,11 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
             ...zoneOverlays.map((zone) => ({
               type: 'polygon' as const,
               data: zonePolygon(zone.points),
-              color: hexToRgba(zone.color, 0.25),
+              // Polygon forces fillColor = series color (see PolygonSeries.drawGraph),
+              // so `color` carries the 15%-opacity fill while `lineColor` keeps the
+              // outline stroke at full strength — the stroke must stay visible.
+              color: hexToRgba(zone.color, 0.15),
+              lineColor: zone.color,
               lineWidth: 1,
               enableMouseTracking: false,
               marker: { enabled: zonePoints, radius: 3, fillColor: zone.color },
@@ -789,11 +805,11 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
               custom: {
                 xLabel: activeChart?.xAxisLabel || 'X',
                 yLabel: activeChart?.yAxisLabel || 'Y',
-                xPrecision: source.xPrecision ?? 2,
-                yPrecision: source.yPrecision ?? 2,
+                xPrecision: source.xPrecision ?? 0,
+                yPrecision: source.yPrecision ?? 0,
               },
               dataLabels: {
-                format: `{point.y:.${source.yPrecision ?? 2}f}`,
+                format: `{point.y:.${source.yPrecision ?? 0}f}`,
                 ...(advanced
                   ? {
                       style: {
