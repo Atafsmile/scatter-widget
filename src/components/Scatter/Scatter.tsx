@@ -44,11 +44,13 @@ const DEFAULT_LOCAL_DURATIONS: GTPPreset[] = [
   { id: 'today', label: 'Today', calendarType: 'today', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
   { id: 'yesterday', label: 'Yesterday', calendarType: 'yesterday', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'day', xEvent: 'Start', y: 1, yPeriod: 'day', yEvent: 'End' },
   { id: 'current_week', label: 'Current Week', calendarType: 'current_week', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'week', xEvent: 'Start', y: 0, yPeriod: 'week', yEvent: 'Now' },
-  { id: 'previous_week', label: 'Previous Week', calendarType: 'previous_week', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'week', xEvent: 'Start', y: 1, yPeriod: 'week', yEvent: 'End' },
-  { id: 'last_7_days', label: 'Last 7 Days', isBuiltIn: true, navigation: 'Previous', x: 7, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
+  { id: 'previous_7_days', label: 'Past 7 days', isBuiltIn: true, navigation: 'Previous', x: 7, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
   { id: 'current_month', label: 'Current Month', calendarType: 'current_month', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
   { id: 'previous_month', label: 'Previous Month', calendarType: 'previous_month', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'month', xEvent: 'Start', y: 1, yPeriod: 'month', yEvent: 'End' },
-  { id: 'last_30_days', label: 'Last 30 Days', isBuiltIn: true, navigation: 'Previous', x: 30, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
+  { id: 'previous_3_month', label: 'Previous 3 Month', isBuiltIn: true, navigation: 'Previous', x: 3, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
+  { id: 'previous_12_month', label: 'Previous 12 Month', isBuiltIn: true, navigation: 'Previous', x: 12, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
+  { id: 'current_year', label: 'Current Year', calendarType: 'current_year', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'year', xEvent: 'Start', y: 0, yPeriod: 'year', yEvent: 'Now' },
+  { id: 'previous_year', label: 'Previous Year', calendarType: 'previous_year', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'year', xEvent: 'Start', y: 1, yPeriod: 'year', yEvent: 'End' },
 ];
 
 const SAFE_STYLING: ScatterStyling = {

@@ -90,7 +90,7 @@ export interface GTPPreset {
   label: string;
   x?: number;
   xPeriod?: GTPPeriod;
-  calendarType?: 'today' | 'yesterday' | 'current_week' | 'previous_week' | 'current_month' | 'previous_month';
+  calendarType?: 'today' | 'yesterday' | 'current_week' | 'previous_week' | 'current_month' | 'previous_month' | 'current_year' | 'previous_year';
   isBuiltIn?: boolean;
   navigation?: GTPNavigation;
   xEvent?: GTPEvent;

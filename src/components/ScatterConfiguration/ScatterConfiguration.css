@@ -131,8 +131,26 @@
 }
 
 /* ---- Add/Edit Data Source modal — Configurator Overlay Pattern ---- */
+/* Transparent (scrim-less) backdrop still needs to catch clicks on the modal itself. */
+.wt-config-ds-modal.fds-modal__backdrop--transparent {
+  pointer-events: auto;
+}
+
 .wt-config-ds-modal .fds-modal {
   width: 280px;
+  /* Grow down from the JS-computed anchor to 16px above the viewport bottom; the
+     shell clips while the body scrolls, so header/footer stay pinned. Fallback 16px
+     covers first paint before computeAnchor() sets the var. */
+  max-height: calc(100vh - var(--wt-anchor-y, 16px) - 16px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.wt-config-ds-modal .fds-modal__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 /* Header/footer divider lines are inset from the modal edges (aligned with the

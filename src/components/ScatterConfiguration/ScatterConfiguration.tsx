@@ -989,13 +989,28 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
     commitCharts(nextCharts);
   }
 
+  // Position the side-panel modal flush-right of the config panel and top-aligned with
+  // it, but clamp Y so a tall modal never spills past the viewport bottom. The resolved
+  // Y is published as --wt-anchor-y so CSS can cap the modal's max-height to fit.
+  // `estHeight` biases the clamp for panels of different expected heights.
+  function computeAnchor(estHeight = 500) {
+    if (!configRef.current) return;
+    const rect = configRef.current.getBoundingClientRect();
+    const margin = 16;
+    const vh = window.innerHeight;
+    let y = rect.top;
+    if (y + estHeight + margin > vh) {
+      y = Math.max(margin, vh - estHeight - margin);
+    }
+    if (y < margin) y = margin;
+    setModalX(rect.right + 30);
+    setModalY(y);
+    document.documentElement.style.setProperty('--wt-anchor-y', `${y}px`);
+  }
+
   function openAddSourceModal(e: React.MouseEvent) {
     e.stopPropagation();
-    if (configRef.current) {
-      const rect = configRef.current.getBoundingClientRect();
-      setModalX(rect.right + 30);
-      setModalY(rect.top);
-    }
+    computeAnchor(600);
     setEditingSourceId(null);
     setDraftSource(makeEmptyDataSource());
     setSourceError(null);
@@ -1003,11 +1018,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   }
 
   function openEditSourceModal(source: ScatterDataSource) {
-    if (configRef.current) {
-      const rect = configRef.current.getBoundingClientRect();
-      setModalX(rect.right + 30);
-      setModalY(rect.top);
-    }
+    computeAnchor(600);
     setEditingSourceId(source.id);
     setDraftSource({ ...source });
     setSourceError(null);
@@ -1065,11 +1076,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
 
   function openOverlayModal(kind: OverlayKind, overlay: ScatterOverlay | null, e?: React.MouseEvent) {
     e?.stopPropagation();
-    if (configRef.current) {
-      const rect = configRef.current.getBoundingClientRect();
-      setModalX(rect.right + 30);
-      setModalY(rect.top);
-    }
+    computeAnchor(520);
     setOverlayModal({ kind, editingId: overlay?.id ?? null });
     setOverlayDraft(overlay ? overlayToDraft(overlay) : makeEmptyOverlayDraft(kind));
     setOverlayError(null);
