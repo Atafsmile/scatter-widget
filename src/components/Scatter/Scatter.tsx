@@ -597,9 +597,17 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
         status={hasData || zoneOverlays.length > 0 || benchmarkOverlays.length > 0 ? undefined : 'not-configured'}
         onChartReady={(instance) => {
           chartInstanceRef.current = instance;
+          const reflow = () => (instance as { reflow?: () => void } | null)?.reflow?.();
           // The container may have reached its final grid size before the instance
-          // existed (so the observe-time reflow was a no-op) — reflow once now.
-          (instance as { reflow?: () => void } | null)?.reflow?.();
+          // existed (so the observe-time reflow was a no-op) — reflow now. But on a
+          // first-time add the widget is still sizing into its grid cell when the
+          // chart becomes ready, so a synchronous reflow measures a stale (squashed)
+          // height. Re-run across the next two frames to land on the final size.
+          reflow();
+          window.requestAnimationFrame(() => {
+            reflow();
+            window.requestAnimationFrame(reflow);
+          });
         }}
         actions={
           <div className="scatter-chart-actions">
