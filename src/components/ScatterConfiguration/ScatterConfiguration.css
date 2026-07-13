@@ -44,11 +44,44 @@
   margin-left: calc(-1 * var(--spacing-05, 16px));
 }
 
-/* Native number-input spin buttons stay visible (feedback #4) — they are the
-   sanctioned stepper, replacing the −/+ icon buttons. */
+/* Native number-input spin buttons are the sanctioned stepper (feedback #4),
+   but they only surface while the field is hovered or focused (feedback #19) —
+   idle fields read as plain inputs. */
 .wt-config input[type="number"]::-webkit-inner-spin-button,
 .wt-config-ds-modal input[type="number"]::-webkit-inner-spin-button {
+  opacity: 0;
+}
+
+.wt-config input[type="number"]:hover::-webkit-inner-spin-button,
+.wt-config input[type="number"]:focus::-webkit-inner-spin-button,
+.wt-config-ds-modal input[type="number"]:hover::-webkit-inner-spin-button,
+.wt-config-ds-modal input[type="number"]:focus::-webkit-inner-spin-button {
   opacity: 1;
+}
+
+/* Icon buttons render their glyph at 16px everywhere (feedback #15) — the
+   Small preset otherwise caps the icon box AND the svg at 12px. Both the
+   .fds-icon-btn__icon box and the svg itself must be sized (the box clips the
+   glyph), and the selectors carry three classes so they outrank the SDK's own
+   size-small rules regardless of stylesheet order. Mirrors
+   .scatter-chart-actions svg on the widget renderer. */
+.wt-config .fds-icon-btn .fds-icon-btn__icon,
+.wt-config .fds-icon-btn .fds-icon-btn__icon svg,
+.wt-config-ds-modal .fds-icon-btn .fds-icon-btn__icon,
+.wt-config-ds-modal .fds-icon-btn .fds-icon-btn__icon svg,
+.wt-config-confirm-modal .fds-icon-btn .fds-icon-btn__icon,
+.wt-config-confirm-modal .fds-icon-btn .fds-icon-btn__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* The Small preset's 12px button box would sit BEHIND its now-16px glyph on
+   hover — grow the hit box to the proto's 20px icon-button frame instead. */
+.wt-config .fds-icon-btn--size-small,
+.wt-config-ds-modal .fds-icon-btn--size-small,
+.wt-config-confirm-modal .fds-icon-btn--size-small {
+  width: 20px;
+  height: 20px;
 }
 
 .wt-config__field {
@@ -333,22 +366,20 @@
 }
 
 /* Remove Comparison Mode + its dependent deviation / per-source sections — Scatter
-   has no period-over-period comparison concept. Also remove Disable Periodicities —
-   Scatter's durations are series-based, not periodicity-driven. */
+   has no period-over-period comparison concept. Periodicity controls (Disable
+   Periodicities, per-duration periodicity) stay VISIBLE: the Time tab mirrors the
+   column chart's panel structure (testing feedback #18). */
 .wt-time-tab .fds-ttc__switch-row:has(input[name$="comparisonMode"]),
 .wt-time-tab .fds-ttc__switch-row:has(input[name$="allowPerSourceIndicator"]),
-.wt-time-tab .fds-ttc__switch-row:has(input[name$="disablePeriodicities"]),
 .wt-time-tab .fds-ttc__deviation,
 .wt-time-tab .fds-ttc__per-source {
   display: none;
 }
 
-/* Kill leftover periodicity selectors mode="series" doesn't reach:
-   1) the SDK Add/Edit Duration sub-panel (portaled to <body>, so NOT tab-scoped). */
-.fds-adp__body .fds-ttc__required-select:has(.fds-select-input__multi-input) {
-  display: none;
-}
-/* 2) the Fixed picker's inline "Set Duration" periodicity. */
-.wt-time-tab .fds-ttc__cycle-body .fds-ttc__required-select:has(input[name="fixed-duration-periodicity"]) {
+/* Hide the Shift accordion (surfaced by the SDK's standard mode) — the Scatter
+   widget computes its local time windows itself and has no shift resolution, so
+   the section would be dead controls. Keyed off the shiftAggregator input, which
+   the SDK renders inside the (collapsed) accordion body. */
+.wt-time-tab .fds-pa-item:has(input[name="shiftAggregator"]) {
   display: none;
 }

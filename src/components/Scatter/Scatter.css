@@ -19,6 +19,15 @@
   --fds-chart-canvas-min-height: 0px;
 }
 
+/* Hard override of the SDK canvas min-height (360px default). The CSS-var
+   route above (--fds-chart-canvas-min-height) covers the base rule, but the
+   SDK also ships :has(...) variants and the variable can lose in the host's
+   style order — pin it to 0 outright so a short grid cell can never be
+   propped open to 360px and crop the legend/x-axis. */
+.widget-template .fds-chart__canvas {
+  min-height: 0;
+}
+
 /* Single card: all card chrome (background/border/radius) lives on
    .widget-template above. The SDK chart renders its own card shell on
    .fds-chart — flatten it so there is never a card inside a card. */
@@ -40,9 +49,22 @@
 /* Second inner surface: LineChart wraps the Highcharts plot + DOM legend in
    .fds-line-chart__viewport, which paints --background-surface-intense (white)
    on its own — a white box over the card color even with .fds-chart and the
-   Highcharts canvas both transparent. The card owns all backgrounds. */
+   Highcharts canvas both transparent. The card owns all backgrounds.
+   min-height: 0 lets the flex viewport actually shrink below its content, so a
+   momentarily too-tall chart can never wedge the card open past its grid cell
+   (x-axis title/legend clipping at the bottom edge). */
 .widget-template .fds-line-chart__viewport {
   background-color: transparent;
+  min-height: 0;
+}
+
+/* Backstop: the Highcharts canvas (.highcharts-container) carries an explicit
+   px size — when it is momentarily larger than the flex plot box (chart created
+   at a stale size, sync not landed yet), it paints straight over the DOM legend
+   below and past the card edge. Clip it at the plot box; a correctly-sized
+   chart is unaffected. */
+.widget-template .fds-line-chart__plot {
+  overflow: hidden;
 }
 
 /* Advanced "Chart Title" styling. The SDK label carries a fixed typography
@@ -159,10 +181,19 @@
 }
 
 /* Keep every action icon (Info / Settings / Export) at a uniform 16px, regardless
-   of the IconButton size preset's own icon-box sizing. */
+   of the IconButton size preset's own icon-box sizing (the Small preset caps the
+   icon box and svg at 12px). The button box grows to the proto's 20px frame so
+   the hover state never paints smaller than its glyph. */
+.scatter-chart-actions .fds-icon-btn .fds-icon-btn__icon,
+.scatter-chart-actions .fds-icon-btn .fds-icon-btn__icon svg,
 .scatter-chart-actions svg {
   width: 16px;
   height: 16px;
+}
+
+.scatter-chart-actions .fds-icon-btn--size-small {
+  width: 20px;
+  height: 20px;
 }
 
 /* ---- Title / Settings / Export dropdown panels ----

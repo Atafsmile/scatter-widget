@@ -39,7 +39,7 @@ import {
 import { parsePointsFile, downloadPointsTemplate } from './points-file';
 import { useUNSTree } from '../../iosense-sdk/useUNSTree';
 import type { UNSTree } from '../../iosense-sdk/useUNSTree';
-import { computeTimeWindow } from '../../iosense-sdk/time-window';
+import { computeTimeWindow, DEFAULT_LOCAL_DURATIONS } from '../../iosense-sdk/time-window';
 import { GLOBAL_TIMEPICKER_FALLBACK } from '../../iosense-sdk/global-timepickers';
 import './ScatterConfiguration.css';
 
@@ -196,6 +196,28 @@ function withCycleTimeDefaults(tc?: TimeTabUIConfig): TimeTabUIConfig {
       ...(base.fixed as object | undefined),
       cycleTime: { ...DEFAULT_CYCLE_TIME, ...(base.fixed?.cycleTime ?? {}) },
     } as TimeTabUIConfig['fixed'],
+  };
+}
+
+// Every envelope MUST carry a resolvable default duration. The host DataLayer
+// computes its fetch window by looking up timeConfig.defaultDurationId inside
+// timeConfig.allDurations and reading the preset's duration expression with NO
+// undefined guard — an envelope saved before the Time tab was ever opened (the
+// SDK only materializes allDurations once the tab mounts) makes every host query
+// crash with "Cannot read properties of undefined (reading 'xPeriod')". Seed the
+// SDK's built-in preset list + "Today" default when they're missing; the ids
+// mirror the SDK's built-ins exactly, so a reloaded Time tab absorbs them as its
+// own built-in selections instead of duplicating them.
+function withHostSafeDurations(tc: TimeTabUIConfig): TimeTabUIConfig {
+  const durations =
+    tc.allDurations && tc.allDurations.length > 0 ? tc.allDurations : DEFAULT_LOCAL_DURATIONS;
+  const hasValidDefault = durations.some((d) => d.id === tc.defaultDurationId);
+  return {
+    ...tc,
+    allDurations: durations,
+    defaultDurationId: hasValidDefault
+      ? tc.defaultDurationId
+      : (durations.find((d) => d.calendarType === 'today') ?? durations[0]).id,
   };
 }
 
@@ -502,32 +524,6 @@ function ChartTitlePicker({
   );
 }
 
-// Plain standard TextInput — a real numeric field the user can type into directly,
-// no custom combo/dropdown.
-function FrequencyInput({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-}) {
-  const invalid = value <= 30;
-  return (
-    <TextInput
-      label="Frequency (in sec)"
-      type="number"
-      isRequired
-      necessityIndicator="required"
-      placeholder="Enter frequency"
-      value={String(value)}
-      validationState={invalid ? 'error' : 'none'}
-      helpText={invalid ? undefined : 'Frequency must be greater than 30 Sec'}
-      errorText={invalid ? 'Frequency must be greater than 30 Sec' : undefined}
-      onChange={({ value: v }) => onChange(Number(v) || 0)}
-    />
-  );
-}
-
 // AccordionItem's header has no slot for a trailing "+" action independent of the
 // expand toggle, so Data-tab sections use plain custom headers (matching the existing
 // .wt-config__section / .wt-config__section-title convention) instead of the SDK Accordion.
@@ -700,30 +696,6 @@ function StylingSection({
               label="Font Weight"
               value={value.title.fontWeight}
               onChange={(fontWeight) => update('title', { fontWeight })}
-            />
-          </div>
-
-          <Divider variant="Muted" />
-
-          <div className="wt-config__section">
-            <span className="wt-config__section-title BodyMediumSemibold">Point Label</span>
-            <NumberField
-              label="Font Size"
-              suffix="px"
-              min={1}
-              value={value.pointLabel.fontSize}
-              onChange={(fontSize) => update('pointLabel', { fontSize })}
-            />
-            <ColorInput
-              label="Font Color"
-              placeholder="Select color"
-              value={value.pointLabel.fontColor}
-              onChange={(fontColor) => update('pointLabel', { fontColor })}
-            />
-            <FontWeightSelect
-              label="Font Weight"
-              value={value.pointLabel.fontWeight}
-              onChange={(fontWeight) => update('pointLabel', { fontWeight })}
             />
           </div>
 
@@ -917,7 +889,12 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
   }) {
     const resolvedCharts = overrides?.charts ?? charts;
     const resolvedStyling = overrides?.styling ?? styling;
-    const resolvedTimeConfig = overrides?.timeTabConfig ?? timeTabConfig;
+    // Normalized at the envelope choke point (not in state) so EVERY emit is
+    // host-safe, whatever path produced the config — fresh widget, host resync,
+    // or the SDK Time tab's own onChange.
+    const resolvedTimeConfig = withHostSafeDurations(
+      withCycleTimeDefaults(overrides?.timeTabConfig ?? timeTabConfig),
+    );
 
     const uiConfig: ScatterUIConfig = {
       charts: resolvedCharts,
@@ -1115,10 +1092,6 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
         'X/Y paths must be UNS bindings — type / to pick a node from the browser. ' +
         'A plain text path is never sent to the data service.',
       );
-      return;
-    }
-    if (draftSource.frequency <= 30) {
-      setSourceError('Frequency must be greater than 30 Sec.');
       return;
     }
     setSourceError(null);
@@ -1541,6 +1514,7 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
               <Modal
                 isOpen
                 size="Small"
+                className="wt-config-confirm-modal"
                 onClose={() => setDeleteTarget(null)}
                 header={
                   <ModalHeader
@@ -1662,10 +1636,6 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
                       placeholder="Select color"
                       value={draftSource.color}
                       onChange={(color) => setDraftSource((d) => ({ ...d, color }))}
-                    />
-                    <FrequencyInput
-                      value={draftSource.frequency}
-                      onChange={(frequency) => setDraftSource((d) => ({ ...d, frequency }))}
                     />
                     {sourceError && (
                       <span className="wt-config__ds-error BodySmallRegular">{sourceError}</span>
@@ -1912,8 +1882,12 @@ export function ScatterConfiguration(props: ScatterConfigurationProps) {
 
         {activeTab === 'time' && (
           <div className="wt-time-tab">
+            {/* Standard mode (not "series") — the Time tab must match the column
+                chart's panel structure: duration presets carry periodicity
+                subtitles and the Disable Periodicities toggle shows (testing
+                feedback #18). Comparison-mode rows are still hidden via CSS —
+                Scatter has no period-over-period concept. */}
             <TimeTabConfiguration
-              mode="series"
               onChange={handleTimeChange}
               value={timeTabConfig as unknown as Partial<SdkTimeTabUIConfig> | undefined}
               globalTimepickers={effectiveGlobalTimepickers as unknown as SdkGTPGlobalTimepicker[]}

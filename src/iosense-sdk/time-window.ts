@@ -196,6 +196,31 @@ export function timeConfigMode(tc: TimeTabUIConfig | undefined): GTPTimeType {
   return mode === 'fixed' || mode === 'global' ? mode : 'local';
 }
 
+// The SDK's TimeTabConfiguration only materializes its preset list once it MOUNTS
+// (i.e. the user opens the Time tab) — a widget configured without ever visiting
+// Time has an empty tc.allDurations. That breaks two consumers:
+//   1. The widget's DatePicker has no presets to list and nothing to highlight.
+//   2. The HOST DataLayer computes its fetch window by looking up defaultDurationId
+//      in allDurations and reading the preset's duration expression WITHOUT a guard
+//      — every query then dies with "Cannot read properties of undefined (reading
+//      'xPeriod')".
+// These mirror the SDK's built-in calendar presets ID-FOR-ID (verified against
+// TimeTabConfiguration's own list), so envelopes seeded with them round-trip
+// cleanly: on reload the Time tab absorbs them as its built-in selections instead
+// of duplicating them. Superseded the instant the user touches the Time tab.
+export const DEFAULT_LOCAL_DURATIONS: GTPPreset[] = [
+  { id: 'today', label: 'Today', calendarType: 'today', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
+  { id: 'yesterday', label: 'Yesterday', calendarType: 'yesterday', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'day', xEvent: 'Start', y: 1, yPeriod: 'day', yEvent: 'End' },
+  { id: 'current_week', label: 'Current Week', calendarType: 'current_week', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'week', xEvent: 'Start', y: 0, yPeriod: 'week', yEvent: 'Now' },
+  { id: 'previous_7_days', label: 'Previous 7 Days', isBuiltIn: true, navigation: 'Previous', x: 7, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
+  { id: 'current_month', label: 'Current Month', calendarType: 'current_month', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
+  { id: 'previous_month', label: 'Previous Month', calendarType: 'previous_month', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'month', xEvent: 'Start', y: 1, yPeriod: 'month', yEvent: 'End' },
+  { id: 'previous_3_month', label: 'Previous 3 Month', isBuiltIn: true, navigation: 'Previous', x: 3, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
+  { id: 'previous_12_month', label: 'Previous 12 Month', isBuiltIn: true, navigation: 'Previous', x: 12, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
+  { id: 'current_year', label: 'Current Year', calendarType: 'current_year', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'year', xEvent: 'Start', y: 0, yPeriod: 'year', yEvent: 'Now' },
+  { id: 'previous_year', label: 'Previous Year', calendarType: 'previous_year', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'year', xEvent: 'Start', y: 1, yPeriod: 'year', yEvent: 'End' },
+];
+
 // A duration is a RELATIVE expression, never absolute timestamps: start bound
 // (x, xPeriod, xEvent) + end bound (y, yPeriod, yEvent), each resolved from `nowMs`.
 // `navigation` is the DIRECTION of the x/y offsets, not an extra shift: the SDK's

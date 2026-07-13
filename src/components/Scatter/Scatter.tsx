@@ -16,9 +16,9 @@ import { Popover } from '@faclon-labs/design-sdk/Popover';
 import { IconButton } from '@faclon-labs/design-sdk/IconButton';
 import { DropdownMenu, ActionListItem } from '@faclon-labs/design-sdk/DropdownMenu';
 import { ChevronDown, Info, Settings, Menu } from 'lucide-react';
-import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSource, ScatterOverlayPoint, ScatterStyling, StylingFontWeight, TimeTabUIConfig, SeriesPayload, GTPPreset } from '../../iosense-sdk/types';
+import { DataEntry, WidgetEvent, ScatterUIConfig, ScatterChart, ScatterDataSource, ScatterOverlayPoint, ScatterStyling, StylingFontWeight, TimeTabUIConfig, SeriesPayload } from '../../iosense-sdk/types';
 import { getSeriesData } from '../../iosense-sdk/mini-engine';
-import { timeConfigMode, computeDurationWindow } from '../../iosense-sdk/time-window';
+import { timeConfigMode, computeDurationWindow, DEFAULT_LOCAL_DURATIONS } from '../../iosense-sdk/time-window';
 import { WidgetEmptyState } from '../../iosense-sdk/WidgetEmptyState';
 import { injectPopoverPanelStyles } from './popover-panel-styles';
 import './Scatter.css';
@@ -32,26 +32,6 @@ interface ScatterProps {
   data: DataEntry[];
   onEvent: (event: WidgetEvent) => void;
 }
-
-// The SDK's TimeTabConfiguration only materializes its preset list once it MOUNTS
-// (i.e. the user opens the Time tab). A widget added and configured without ever
-// visiting Time has an empty tc.allDurations — the DatePicker then has no presets to
-// list ("No results found") and nothing to highlight, so it collapses to "Custom".
-// These mirror the SDK's built-in calendar presets so a fresh widget shows a usable
-// preset list and defaults its selection to "Today". Superseded the instant the user
-// touches the Time tab, at which point tc.allDurations arrives from the SDK.
-const DEFAULT_LOCAL_DURATIONS: GTPPreset[] = [
-  { id: 'today', label: 'Today', calendarType: 'today', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
-  { id: 'yesterday', label: 'Yesterday', calendarType: 'yesterday', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'day', xEvent: 'Start', y: 1, yPeriod: 'day', yEvent: 'End' },
-  { id: 'current_week', label: 'Current Week', calendarType: 'current_week', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'week', xEvent: 'Start', y: 0, yPeriod: 'week', yEvent: 'Now' },
-  { id: 'previous_7_days', label: 'Past 7 days', isBuiltIn: true, navigation: 'Previous', x: 7, xPeriod: 'day', xEvent: 'Start', y: 0, yPeriod: 'day', yEvent: 'Now' },
-  { id: 'current_month', label: 'Current Month', calendarType: 'current_month', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
-  { id: 'previous_month', label: 'Previous Month', calendarType: 'previous_month', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'month', xEvent: 'Start', y: 1, yPeriod: 'month', yEvent: 'End' },
-  { id: 'previous_3_month', label: 'Previous 3 Month', isBuiltIn: true, navigation: 'Previous', x: 3, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
-  { id: 'previous_12_month', label: 'Previous 12 Month', isBuiltIn: true, navigation: 'Previous', x: 12, xPeriod: 'month', xEvent: 'Start', y: 0, yPeriod: 'month', yEvent: 'Now' },
-  { id: 'current_year', label: 'Current Year', calendarType: 'current_year', isBuiltIn: true, navigation: 'Current', x: 0, xPeriod: 'year', xEvent: 'Start', y: 0, yPeriod: 'year', yEvent: 'Now' },
-  { id: 'previous_year', label: 'Previous Year', calendarType: 'previous_year', isBuiltIn: true, navigation: 'Previous', x: 1, xPeriod: 'year', xEvent: 'Start', y: 1, yPeriod: 'year', yEvent: 'End' },
-];
 
 const SAFE_STYLING: ScatterStyling = {
   card: { wrapInCard: true, backgroundColor: '#FFFFFF', borderColor: '#EEEEEE', borderWidth: 1, borderRadius: 8 },
@@ -128,6 +108,25 @@ function zonePolygon(points: ScatterOverlayPoint[]): Array<[number, number]> {
     return [[a.x, a.y], [b.x, a.y], [b.x, b.y], [a.x, b.y]];
   }
   return points.map((p) => [p.x, p.y]);
+}
+
+// Collinear vertices make a zero-area polygon, which paints as a bare line —
+// testers enter a diagonal of points as a "boundary" and expect a shaded layer
+// (feedback: "a layer of zone with opaque color is supposed to come"). Such
+// zones render as an area band under the polyline instead (see zone series
+// below). Two points are exempt: they read as rectangle corners.
+function isCollinearZone(points: ScatterOverlayPoint[]): boolean {
+  if (points.length <= 2) return false;
+  const [p0] = points;
+  // Coordinates are user data of arbitrary magnitude — epsilon must scale with it.
+  let scale = 0;
+  for (const p of points) scale = Math.max(scale, Math.abs(p.x - p0.x), Math.abs(p.y - p0.y));
+  if (scale === 0) return true;
+  const p1 = points.find((p) => p.x !== p0.x || p.y !== p0.y) ?? p0;
+  const eps = scale * scale * 1e-9;
+  return points.every(
+    (p) => Math.abs((p1.x - p0.x) * (p.y - p0.y) - (p1.y - p0.y) * (p.x - p0.x)) <= eps,
+  );
 }
 
 function fontWeightToCss(weight: StylingFontWeight): number {
@@ -366,37 +365,161 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
   const [zoneLegends, setZoneLegends] = useState(true);
   const chartInstanceRef = useRef<unknown>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // Highcharts sizes itself to the container's measured dimensions at render time and
-  // only auto-reflows on WINDOW resize — it never sees the dashboard grid resizing the
-  // widget's own container (which is why a full page refresh, re-measuring at the final
-  // size, "fixes" the squashed first render). Observe the container and reflow on any
-  // size change. A callback ref (not a useEffect) so it re-targets correctly across the
-  // no-source → chart branch swap without running afoul of the early returns' hook order.
+  // Force the chart to match its container box. NEVER route this through
+  // chart.reflow(): Highcharts reflow() silently DROPS the call while a previous
+  // setSize is still in flight (chart.isResizing) — and in that branch it also
+  // skips updating its cached containerBox, so when the dashboard grid's FINAL
+  // resize lands inside that window, no further ResizeObserver event ever comes
+  // and the chart stays at the stale size until a full refresh re-creates it at
+  // the settled layout. (A chart created while its box measures ≤1px also falls
+  // back to Highcharts' 400px default height — the "chart taller than the card"
+  // variant.)
+  //
+  // The container box alone is NOT a trustworthy target, though: an oversized
+  // chart can wedge its own flex chain open (anywhere the host resolves a
+  // percentage height against an auto-height parent), and then
+  // renderTo.clientHeight simply equals the chart's wrong height — the compare
+  // says "in sync" and every observer and settle-tail call no-ops forever while
+  // the x-axis labels/legend clip at the card edge. Break the circularity with a
+  // top-down clamp: the widget root's box comes from the host grid (never from
+  // chart content — it's height:100% + overflow:hidden), so the chart may be at
+  // most (root inner bottom − plot top − everything below the plot). Explicit
+  // px setSize (not undefined/undefined) so Highcharts can't re-derive a wedged
+  // measurement back out of the DOM.
+  const syncChartSize = useCallback(() => {
+    const chart = chartInstanceRef.current as {
+      container?: HTMLElement;
+      chartWidth?: number;
+      chartHeight?: number;
+      setSize?: (w?: number, h?: number, anim?: boolean) => void;
+    } | null;
+    // container = .highcharts-container; its parent is the renderTo div
+    // (.fds-line-chart, height:100% of the SDK's flex plot box) — the box the
+    // chart is supposed to fill. Gone once the chart is destroyed → no-op.
+    const renderTo = chart?.container?.parentElement;
+    if (!chart || !renderTo || !renderTo.isConnected) return;
+    const w = renderTo.clientWidth;
+    let h = renderTo.clientHeight;
+    // Skip transient 0/1px boxes mid grid relayout — sizing to them squashes the
+    // chart; the ResizeObserver fires again when the box lands on its real size.
+    if (w < 2 || h < 2) return;
+    const root = containerRef.current;
+    if (root && root.contains(renderTo)) {
+      const innerBottomOf = (el: Element) => {
+        const cs = window.getComputedStyle(el);
+        return (
+          el.getBoundingClientRect().bottom -
+          (parseFloat(cs.borderBottomWidth) || 0) -
+          (parseFloat(cs.paddingBottom) || 0)
+        );
+      };
+      let innerBottom = innerBottomOf(root);
+      // The root's own bottom is only a trustworthy ceiling while the HOST
+      // gives it a definite height. The dashboard host sizes the grid cell on
+      // a WRAPPER with overflow:hidden while the widget root resolves
+      // height:100% against an auto-height parent — the root then grows WITH
+      // the oversized chart, its bottom sits below the cell's crop line, and
+      // the clamp sees "plenty of room" forever (the "card cropped at the
+      // cell edge below ~500px" bug: Highcharts' 400px default + header +
+      // filters). The element doing the cropping is the real ceiling — take
+      // the NEAREST overflow hidden/clip ancestor, nearby only (a distant
+      // app-shell crop belongs to page layout, not this cell), and clamp to
+      // the tighter of the two bounds. Observe it too: with the root
+      // content-sized, a later cell resize never fires the root observer.
+      for (
+        let anc = root.parentElement, depth = 0;
+        anc && depth < 4;
+        anc = anc.parentElement, depth++
+      ) {
+        const ov = window.getComputedStyle(anc).overflowY;
+        if (ov === 'hidden' || ov === 'clip') {
+          innerBottom = Math.min(innerBottom, innerBottomOf(anc));
+          resizeObserverRef.current?.observe(anc);
+          break;
+        }
+      }
+      // Space reserved below the plot inside the viewport: the DOM legend (and
+      // shift legend) are later siblings of .fds-line-chart__plot. Measured
+      // live — width is unchanged by a height clamp, so their height is stable.
+      let below = 0;
+      for (let el = renderTo.parentElement?.nextElementSibling; el; el = el.nextElementSibling) {
+        below += (el as HTMLElement).getBoundingClientRect().height;
+      }
+      // Bottom chrome between the plot and the root — the card's own bottom
+      // padding/border on every ancestor in between. Without it the clamp
+      // lands ~12px too tall and the legend row stays half-cropped.
+      let chrome = 0;
+      for (let el = renderTo.parentElement; el && el !== root; el = el.parentElement) {
+        const cs = window.getComputedStyle(el);
+        chrome += (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+      }
+      const available = Math.floor(
+        innerBottom - renderTo.getBoundingClientRect().top - below - chrome,
+      );
+      // Shrink-only clamp — growth flows through the normal container-box path
+      // once the flex chain is healthy, so this can never oscillate.
+      if (available >= 2 && available < h - 1) h = available;
+    }
+    if (Math.abs((chart.chartWidth ?? 0) - w) > 1 || Math.abs((chart.chartHeight ?? 0) - h) > 1) {
+      chart.setSize?.(w, h, false);
+    }
+    // The SDK's DOM legend (LegendPager) measures itself ONCE in a layout
+    // effect and re-measures only when its own row resizes. When that first
+    // measure lands while the row has a transient near-zero width (host grid
+    // mid relayout — exactly when the chart mounts), it wedges into paged mode
+    // with a ~1px viewport and two disabled arrows: the legend row looks
+    // empty. If the row is back at its real width before its ResizeObserver
+    // reports again, nothing ever re-measures — the "legend randomly missing
+    // until reload" bug. A paged viewport this narrow can never come from a
+    // real measure of a normally sized row, so treat it as the wedge and nudge
+    // the row's inline width for one frame; the pager's own observer fires and
+    // re-measures against the settled box. No-op when the legend is healthy.
+    const legend = root?.querySelector<HTMLElement>('.fds-chart-legend');
+    const pagedViewport = legend?.querySelector<HTMLElement>('.fds-legend-pager__viewport') ?? null;
+    if (
+      legend &&
+      pagedViewport &&
+      legend.clientWidth > 120 &&
+      pagedViewport.clientWidth < 30 &&
+      !legend.style.width
+    ) {
+      legend.style.width = `${legend.clientWidth - 1}px`;
+      window.requestAnimationFrame(() => {
+        legend.style.width = '';
+      });
+    }
+  }, []);
+  // The widget never sees the dashboard grid resizing its container (Highcharts
+  // only auto-reflows on WINDOW resize), so observe the container ourselves. Also
+  // load-bearing for a second reason: the SDK LineChart's own resize observer
+  // attaches ONCE on mount — and on first load the chart mounts showing the
+  // status="not-configured" empty state (data not yet arrived), so the plot div
+  // doesn't exist, the SDK observer binds to nothing, and it stays dead for the
+  // lifetime of the widget. A callback ref (not a useEffect) so it re-targets
+  // correctly across the no-source → chart branch swap without running afoul of
+  // the early returns' hook order.
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const attachContainer = useCallback((el: HTMLDivElement | null) => {
     containerRef.current = el;
     resizeObserverRef.current?.disconnect();
     resizeObserverRef.current = null;
     if (el && typeof ResizeObserver !== 'undefined') {
-      // Defer the reflow to the next animation frame: a synchronous reflow inside
-      // the observer callback can read a stale/intermediate box (or a transient 0
-      // during a grid relayout), which leaves the chart squashed and its DOM legend
-      // clipped until some later, unrelated resize. Coalesce bursts through a single
-      // pending frame, and skip reflow while the container measures 0.
+      // Defer to the next animation frame: a synchronous read inside the observer
+      // callback can see a stale/intermediate box during a grid relayout.
+      // Coalesce bursts through a single pending frame — syncChartSize compares
+      // before resizing, so redundant fires are free.
       let rafId = 0;
       const ro = new ResizeObserver(() => {
         if (rafId) return;
         rafId = window.requestAnimationFrame(() => {
           rafId = 0;
-          const node = containerRef.current;
-          if (node && (node.clientWidth === 0 || node.clientHeight === 0)) return;
-          (chartInstanceRef.current as { reflow?: () => void } | null)?.reflow?.();
+          syncChartSize();
         });
       });
       ro.observe(el);
       resizeObserverRef.current = ro;
     }
-  }, []);
+  }, [syncChartSize]);
   useEffect(() => () => resizeObserverRef.current?.disconnect(), []);
   // Last window emitted via TIME_CHANGE — a preset click applies the window in
   // handlePresetSelect, and the SDK DatePicker may fire onRangeChange right after
@@ -442,6 +565,9 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
         // config problem. Say so instead of silently rendering an empty canvas,
         // and distinguish "no entry for this key" from "entry present but not
         // series-shaped" (host/engine contract drift) vs "series with zero slots".
+        // The source still renders as an EMPTY series (not dropped) so its legend
+        // entry stays visible — a configured source must appear in the legend even
+        // while its data hasn't resolved (testing feedback #10).
         const describe = (axis: 'X' | 'Y', field: 'xField' | 'yField', series: SeriesPayload | null) => {
           if (series) return series.slots.length === 0 ? `${axis} axis series has zero slots` : null;
           const key = `charts[${activeChartIndex}].dataSources[${j}].${field}`;
@@ -455,7 +581,7 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
           `[Scatter] source "${source.label || j}" not plotted — ${reason}. ` +
           `Check the UNS path and time window.`,
         );
-        return null;
+        return { source, points: [] };
       }
       // Pair by slot timestamp, not array index — the two topics resolve on the
       // same slot grid, but a missing leading/trailing slot on one side would
@@ -466,11 +592,11 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
         const yv = yByFrom.get(slot.from);
         if (slot.value !== null && yv !== null && yv !== undefined) points.push([slot.value, yv]);
       }
-      return points.length > 0 ? { source, points } : null;
+      return { source, points };
     })
     .filter((e): e is ScatterSeriesEntry => e !== null);
 
-  const hasData = seriesEntries.length > 0;
+  const hasData = seriesEntries.some((e) => e.points.length > 0);
   // "Configured" = at least one source with both axes bound — decides between the
   // "Data Source not configured" and "No data found" empty states below.
   const hasConfiguredSource = (activeChart?.dataSources ?? []).some((s) => s.xField && s.yField);
@@ -597,17 +723,28 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
         status={hasData || zoneOverlays.length > 0 || benchmarkOverlays.length > 0 ? undefined : 'not-configured'}
         onChartReady={(instance) => {
           chartInstanceRef.current = instance;
-          const reflow = () => (instance as { reflow?: () => void } | null)?.reflow?.();
-          // The container may have reached its final grid size before the instance
-          // existed (so the observe-time reflow was a no-op) — reflow now. But on a
-          // first-time add the widget is still sizing into its grid cell when the
-          // chart becomes ready, so a synchronous reflow measures a stale (squashed)
-          // height. Re-run across the next two frames to land on the final size.
-          reflow();
+          // The chart may have been created mid grid relayout (or at a ≤1px box,
+          // where Highcharts falls back to a 400px default height) — sync now and
+          // across the next two frames to land on the settled size.
+          syncChartSize();
           window.requestAnimationFrame(() => {
-            reflow();
-            window.requestAnimationFrame(reflow);
+            syncChartSize();
+            window.requestAnimationFrame(syncChartSize);
           });
+          // Settle tail — catches a host grid/font-load layout that lands after
+          // the frame tail above without changing any observed box (each call is
+          // a compare-first no-op once the size matches).
+          [250, 700, 1500].forEach((ms) => window.setTimeout(syncChartSize, ms));
+          // Also watch the canvas box the chart actually sizes against. The root
+          // observer above only sees the WIDGET resizing — inner layout shifts at a
+          // constant widget size (the DOM legend mounting once data arrives, the
+          // filter row wrapping) shrink the canvas without firing it, leaving a
+          // too-tall chart whose x-axis title/legend clip at the card edge.
+          // observe() also delivers an initial notification, giving one more
+          // deferred sync right after chart creation.
+          const canvasBox = (instance as { container?: HTMLElement } | null)?.container
+            ?.parentElement;
+          if (canvasBox) resizeObserverRef.current?.observe(canvasBox);
         }}
         actions={
           <div className="scatter-chart-actions">
@@ -787,20 +924,42 @@ export function Scatter({ config, data, onEvent }: ScatterProps) {
           // escape-hatch pattern) — same zones → data sources → benchmarks order as
           // legendSeries. Name/color live on the prop entry.
           series: [
-            ...zoneOverlays.map((zone) => ({
-              type: 'polygon' as const,
-              data: zonePolygon(zone.points),
-              // Polygon forces fillColor = series color (see PolygonSeries.drawGraph),
-              // so `color` carries the 15%-opacity fill while `lineColor` keeps the
-              // outline stroke at full strength — the stroke must stay visible.
-              color: hexToRgba(zone.color, 0.15),
-              lineColor: zone.color,
-              lineWidth: 1,
-              enableMouseTracking: false,
-              marker: { enabled: zonePoints, radius: 3, fillColor: zone.color },
-              showInLegend: zoneLegends,
-              zIndex: 0,
-            })),
+            ...zoneOverlays.map((zone) =>
+              isCollinearZone(zone.points)
+                ? {
+                    // Collinear vertices = zero-area polygon (paints as a bare
+                    // line). Read them as a boundary polyline instead and fill
+                    // down to the axis floor so a shaded layer always shows.
+                    type: 'area' as const,
+                    data: zone.points
+                      .map((p) => [p.x, p.y] as [number, number])
+                      .sort((a, b) => a[0] - b[0]),
+                    color: zone.color,
+                    fillColor: hexToRgba(zone.color, 0.15),
+                    // null = extend the fill to the Y-axis minimum, not just y=0.
+                    threshold: null,
+                    lineWidth: 1,
+                    enableMouseTracking: false,
+                    marker: { enabled: zonePoints, radius: 3, fillColor: zone.color },
+                    showInLegend: zoneLegends,
+                    zIndex: 0,
+                    dataLabels: { enabled: false },
+                  }
+                : {
+                    type: 'polygon' as const,
+                    data: zonePolygon(zone.points),
+                    // Polygon forces fillColor = series color (see PolygonSeries.drawGraph),
+                    // so `color` carries the 15%-opacity fill while `lineColor` keeps the
+                    // outline stroke at full strength — the stroke must stay visible.
+                    color: hexToRgba(zone.color, 0.15),
+                    lineColor: zone.color,
+                    lineWidth: 1,
+                    enableMouseTracking: false,
+                    marker: { enabled: zonePoints, radius: 3, fillColor: zone.color },
+                    showInLegend: zoneLegends,
+                    zIndex: 0,
+                  },
+            ),
             ...seriesEntries.map(({ source, points }) => ({
               type: 'scatter' as const,
               data: points,
